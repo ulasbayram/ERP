@@ -31,7 +31,7 @@ SESSION_DAYS = int(os.environ.get("ERP_SESSION_DAYS", "7"))
 COOKIE_SECURE = os.environ.get("ERP_COOKIE_SECURE", "false").lower() == "true"
 INVITE_CODE = os.environ.get("ERP_INVITE_CODE", "")
 ALLOW_OPEN_REGISTRATION = os.environ.get("ERP_ALLOW_OPEN_REGISTRATION", "false").lower() == "true"
-HOST = os.environ.get("HOST", os.environ.get("ERP_HOST", "127.0.0.1"))
+HOST = os.environ.get("ERP_HOST", "127.0.0.1")
 MAX_UPLOAD_BYTES = int(os.environ.get("ERP_MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)))
 RATE_LIMITS: dict[str, list[float]] = {}
 

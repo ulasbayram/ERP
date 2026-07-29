@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
     environment:
-      - HOST=${HOST:-0.0.0.0}
+      - ERP_HOST=0.0.0.0
       - ERP_PORT=${ERP_PORT:-8088}
       - ERP_COOKIE_SECURE=${ERP_COOKIE_SECURE:-true}
       - ERP_SESSION_DAYS=${ERP_SESSION_DAYS:-7}
