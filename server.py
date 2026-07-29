@@ -877,6 +877,9 @@ class ERPHandler(SimpleHTTPRequestHandler):
         super().__init__(*args, directory=str(PUBLIC), **kwargs)
 
     def end_headers(self) -> None:
+        static_path = urlparse(self.path).path
+        if static_path.endswith((".html", ".js", ".css")) or static_path in {"/", "/login"}:
+            self.send_header("Cache-Control", "no-store, max-age=0")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "same-origin")
