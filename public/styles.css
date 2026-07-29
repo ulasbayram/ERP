@@ -577,6 +577,52 @@ tbody tr:hover {
   font-size: 12px;
 }
 
+.select-col {
+  width: 34px;
+  min-width: 34px;
+  text-align: center;
+}
+
+.select-col input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--ink);
+}
+
+.list-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+  padding: 10px 12px;
+  background: var(--panel-soft);
+}
+
+.list-toolbar span {
+  color: var(--muted);
+  font-weight: 800;
+  font-size: 12px;
+}
+
+.list-toolbar div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.list-toolbar button {
+  min-height: 30px;
+  padding: 6px 9px;
+}
+
+.list-toolbar button:disabled {
+  opacity: 0.46;
+  cursor: not-allowed;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;

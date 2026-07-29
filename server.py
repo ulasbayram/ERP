@@ -1245,6 +1245,105 @@ class ERPHandler(SimpleHTTPRequestHandler):
                 self.send_json({"error": f"Fatura kaydedilemedi: {exc}"}, 500)
             return
 
+        if parsed.path == "/api/purchase-invoices/mark-paid":
+            try:
+                payload = read_json_body(self)
+                ids = [int(item) for item in payload.get("ids", []) if int(item) > 0]
+                if not ids:
+                    self.send_json({"error": "Seçili fatura yok."}, 400)
+                    return
+                placeholders = ",".join("?" for _ in ids)
+                with connect() as conn:
+                    conn.execute(
+                        f"""
+                        UPDATE purchase_invoices
+                        SET paid_amount = gross_total,
+                            remaining_amount = 0,
+                            payment_status = 'paid'
+                        WHERE id IN ({placeholders})
+                        """,
+                        ids,
+                    )
+                    conn.execute(
+                        "INSERT INTO audit_events(actor, action, entity_name, new_value) VALUES (?, ?, ?, ?)",
+                        (
+                            self.current_user()["email"],
+                            "bulk_mark_paid",
+                            "purchase_invoices",
+                            json.dumps({"ids": ids}, ensure_ascii=False),
+                        ),
+                    )
+                self.send_json({"dashboard": dashboard_payload()})
+            except json.JSONDecodeError:
+                self.send_json({"error": "Geçersiz JSON."}, 400)
+            except Exception as exc:
+                self.send_json({"error": f"Faturalar güncellenemedi: {exc}"}, 500)
+            return
+
+        if parsed.path == "/api/employees/bulk-site":
+            try:
+                payload = read_json_body(self)
+                ids = [int(item) for item in payload.get("ids", []) if int(item) > 0]
+                site_name = normalize_text(payload.get("projectSiteName"))
+                if not ids:
+                    self.send_json({"error": "Seçili personel yok."}, 400)
+                    return
+                placeholders = ",".join("?" for _ in ids)
+                with connect() as conn:
+                    site_id = get_or_create_site(conn, site_name) if site_name else None
+                    conn.execute(
+                        f"UPDATE employees SET project_site_id = ? WHERE id IN ({placeholders})",
+                        [site_id, *ids],
+                    )
+                    conn.execute(
+                        "INSERT INTO audit_events(actor, action, entity_name, new_value) VALUES (?, ?, ?, ?)",
+                        (
+                            self.current_user()["email"],
+                            "bulk_update_employee_site",
+                            "employees",
+                            json.dumps({"ids": ids, "project_site": site_name}, ensure_ascii=False),
+                        ),
+                    )
+                self.send_json({"dashboard": dashboard_payload()})
+            except json.JSONDecodeError:
+                self.send_json({"error": "Geçersiz JSON."}, 400)
+            except Exception as exc:
+                self.send_json({"error": f"Şantiye güncellenemedi: {exc}"}, 500)
+            return
+
+        if parsed.path == "/api/employees/bulk-advance":
+            try:
+                payload = read_json_body(self)
+                ids = [int(item) for item in payload.get("ids", []) if int(item) > 0]
+                advance_amount = to_float(payload.get("advanceAmount"))
+                if not ids:
+                    self.send_json({"error": "Seçili personel yok."}, 400)
+                    return
+                if advance_amount < 0:
+                    self.send_json({"error": "Avans negatif olamaz."}, 400)
+                    return
+                placeholders = ",".join("?" for _ in ids)
+                with connect() as conn:
+                    conn.execute(
+                        f"UPDATE employees SET advance_amount = ? WHERE id IN ({placeholders})",
+                        [advance_amount, *ids],
+                    )
+                    conn.execute(
+                        "INSERT INTO audit_events(actor, action, entity_name, new_value) VALUES (?, ?, ?, ?)",
+                        (
+                            self.current_user()["email"],
+                            "bulk_update_employee_advance",
+                            "employees",
+                            json.dumps({"ids": ids, "advance_amount": advance_amount}, ensure_ascii=False),
+                        ),
+                    )
+                self.send_json({"dashboard": dashboard_payload()})
+            except json.JSONDecodeError:
+                self.send_json({"error": "Geçersiz JSON."}, 400)
+            except Exception as exc:
+                self.send_json({"error": f"Avans güncellenemedi: {exc}"}, 500)
+            return
+
         if parsed.path == "/api/employees/site":
             try:
                 payload = read_json_body(self)

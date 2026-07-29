@@ -11,6 +11,15 @@ const state = {
   query: "",
   selectedPayable: null,
   selectedEmployee: null,
+  selectedRows: {
+    ap: new Set(),
+    bank: new Set(),
+    paymentInvoices: new Set(),
+    instruments: new Set(),
+    partners: new Set(),
+    employees: new Set(),
+    vat: new Set(),
+  },
 };
 
 function formatMoney(value) {
@@ -83,6 +92,56 @@ function escapeHtml(value) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+function rowKey(value) {
+  return String(value ?? "");
+}
+
+function selectionFor(list) {
+  if (!state.selectedRows[list]) state.selectedRows[list] = new Set();
+  return state.selectedRows[list];
+}
+
+function selectedIds(list) {
+  return [...selectionFor(list)];
+}
+
+function checkboxCell(list, id) {
+  const key = rowKey(id);
+  return `<td class="select-col"><input type="checkbox" data-select-list="${list}" data-select-id="${escapeHtml(key)}" ${
+    selectionFor(list).has(key) ? "checked" : ""
+  } aria-label="Satırı seç" /></td>`;
+}
+
+function selectColumnEmpty() {
+  return `<td class="select-col"></td>`;
+}
+
+function syncSelectAll(list, visibleIds = []) {
+  const selectAll = document.querySelector(`[data-select-all="${list}"]`);
+  if (!selectAll) return;
+  const selected = selectionFor(list);
+  const keys = visibleIds.map(rowKey);
+  const selectedCount = keys.filter((id) => selected.has(id)).length;
+  selectAll.checked = keys.length > 0 && selectedCount === keys.length;
+  selectAll.indeterminate = selectedCount > 0 && selectedCount < keys.length;
+}
+
+function wireSelection(list, visibleIds = []) {
+  const selected = selectionFor(list);
+  document.querySelectorAll(`[data-select-list="${list}"]`).forEach((input) => {
+    input.addEventListener("click", (event) => event.stopPropagation());
+    input.addEventListener("change", () => {
+      const id = rowKey(input.dataset.selectId);
+      if (input.checked) selected.add(id);
+      else selected.delete(id);
+      syncSelectAll(list, visibleIds);
+      updateBulkToolbar(list);
+    });
+  });
+  syncSelectAll(list, visibleIds);
+  updateBulkToolbar(list);
 }
 
 function setStatus(text, ok = true) {
@@ -172,6 +231,7 @@ function renderPayables(rows = []) {
         .map(
           (row) => `
             <tr data-payable="${row.id}">
+              ${checkboxCell("ap", row.id)}
               <td>${formatDate(row.invoice_date)}</td>
               <td>${escapeHtml(row.invoice_no || "-")}</td>
               <td>${escapeHtml(row.partner || "-")}</td>
@@ -183,7 +243,7 @@ function renderPayables(rows = []) {
           `
         )
         .join("")
-    : `<tr><td colspan="7">Kayıt bulunamadı.</td></tr>`;
+    : `<tr>${selectColumnEmpty()}<td colspan="7">Kayıt bulunamadı.</td></tr>`;
 
   document.querySelectorAll("[data-payable]").forEach((rowEl) => {
     rowEl.addEventListener("click", () => {
@@ -192,6 +252,7 @@ function renderPayables(rows = []) {
       renderInspector();
     });
   });
+  wireSelection("ap", filtered.map((row) => row.id));
 
   if (!state.selectedPayable && filtered[0]) {
     state.selectedPayable = filtered[0];
@@ -232,6 +293,7 @@ function renderBank(rows = []) {
         .map(
           (row) => `
             <tr>
+              ${checkboxCell("bank", row.id)}
               <td>${formatDate(row.transaction_date)}</td>
               <td>${escapeHtml(row.transaction_type || "-")}</td>
               <td>${escapeHtml(row.transaction_group || "-")} / ${escapeHtml(row.sub_category || "-")}</td>
@@ -241,7 +303,7 @@ function renderBank(rows = []) {
           `
         )
         .join("")
-    : `<tr><td colspan="5">Kayıt bulunamadı.</td></tr>`;
+    : `<tr>${selectColumnEmpty()}<td colspan="5">Kayıt bulunamadı.</td></tr>`;
 
   document.querySelectorAll("[data-bank-match]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -249,6 +311,7 @@ function renderBank(rows = []) {
       openBankMatch(row);
     });
   });
+  wireSelection("bank", filtered.map((row) => row.id));
 }
 
 function renderPayments(payables = [], instruments = []) {
@@ -258,6 +321,7 @@ function renderPayments(payables = [], instruments = []) {
         .map(
           (row) => `
             <tr>
+              ${checkboxCell("paymentInvoices", row.id)}
               <td>${formatDate(row.due_date)}</td>
               <td>${escapeHtml(row.partner || "-")}</td>
               <td>${escapeHtml(row.invoice_no || "-")}</td>
@@ -266,13 +330,14 @@ function renderPayments(payables = [], instruments = []) {
           `
         )
         .join("")
-    : `<tr><td colspan="4">Açık fatura yok.</td></tr>`;
+    : `<tr>${selectColumnEmpty()}<td colspan="4">Açık fatura yok.</td></tr>`;
 
   document.querySelector("#instrumentRows").innerHTML = instruments.length
     ? instruments
         .map(
           (row) => `
             <tr>
+              ${checkboxCell("instruments", row.id)}
               <td>${formatDate(row.due_date)}</td>
               <td>${escapeHtml(row.partner || "-")}</td>
               <td>${escapeHtml(row.instrument_no || "-")}</td>
@@ -281,7 +346,9 @@ function renderPayments(payables = [], instruments = []) {
           `
         )
         .join("")
-    : `<tr><td colspan="4">Portföy kaydı yok.</td></tr>`;
+    : `<tr>${selectColumnEmpty()}<td colspan="4">Portföy kaydı yok.</td></tr>`;
+  wireSelection("paymentInvoices", open.map((row) => row.id));
+  wireSelection("instruments", instruments.map((row) => row.id));
 }
 
 function renderPartners(rows = []) {
@@ -290,6 +357,7 @@ function renderPartners(rows = []) {
     .map(
       (row) => `
         <tr>
+          ${checkboxCell("partners", row.id)}
           <td>${escapeHtml(row.name)}</td>
           <td>${escapeHtml(row.partner_type)}</td>
           <td class="amount">${formatNumber(row.invoice_count)}</td>
@@ -299,6 +367,7 @@ function renderPartners(rows = []) {
       `
     )
     .join("");
+  wireSelection("partners", filtered.map((row) => row.id));
 }
 
 function renderEmployees(rows = []) {
@@ -309,6 +378,7 @@ function renderEmployees(rows = []) {
         const jobTitle = cleanJobTitle(row);
         return `
           <tr data-employee="${row.id}">
+            ${checkboxCell("employees", row.id)}
             <td>${escapeHtml(row.full_name)}</td>
             <td>${formatDate(row.hire_date)}</td>
             <td>${escapeHtml(jobTitle)}</td>
@@ -335,6 +405,7 @@ function renderEmployees(rows = []) {
       openSiteModal(employee);
     });
   });
+  wireSelection("employees", filtered.map((row) => row.id));
 }
 
 function openSiteModal(employee) {
@@ -446,6 +517,7 @@ function renderVat(rows = []) {
         .map(
           (row) => `
             <tr>
+              ${checkboxCell("vat", row.period || row.id)}
               <td>${escapeHtml(row.period || "-")}</td>
               <td class="amount">${formatMoney(row.purchase_base)}</td>
               <td class="amount">${formatMoney(row.purchase_vat)}</td>
@@ -456,7 +528,8 @@ function renderVat(rows = []) {
           `
         )
         .join("")
-    : `<tr><td colspan="6">KDV hareketi yok.</td></tr>`;
+    : `<tr>${selectColumnEmpty()}<td colspan="6">KDV hareketi yok.</td></tr>`;
+  wireSelection("vat", rows.map((row) => row.period || row.id));
 }
 
 function renderImportInfo(payload = {}) {
@@ -741,6 +814,332 @@ function downloadTemplate() {
   showToast("Şablon indirildi");
 }
 
+const bulkToolbarConfig = {
+  ap: [
+    ["paymentRun", "Ödeme run"],
+    ["markPaid", "Ödendi işaretle"],
+    ["voucher", "Fiş önizle"],
+    ["export", "Dışa aktar"],
+  ],
+  bank: [
+    ["bankMatch", "Eşleştir"],
+    ["bankExpense", "Masraf yaz"],
+    ["export", "Dışa aktar"],
+  ],
+  paymentInvoices: [
+    ["paymentRun", "Ödeme run"],
+    ["markPaid", "Ödendi işaretle"],
+    ["export", "Dışa aktar"],
+  ],
+  instruments: [
+    ["instrumentSummary", "Portföy özeti"],
+    ["export", "Dışa aktar"],
+  ],
+  partners: [
+    ["partnerSummary", "Cari özeti"],
+    ["export", "Dışa aktar"],
+  ],
+  employees: [
+    ["bulkAdvance", "Avans gir"],
+    ["bulkSite", "Şantiye ata"],
+    ["export", "Dışa aktar"],
+  ],
+  vat: [
+    ["vatCheck", "Beyan kontrol"],
+    ["export", "Dışa aktar"],
+  ],
+};
+
+function listRows(list) {
+  const payload = state.payload || {};
+  if (list === "ap") return payload.payables || [];
+  if (list === "bank") return payload.recentBankLines || [];
+  if (list === "paymentInvoices") return (payload.payables || []).filter((row) => Number(row.remaining_amount || 0) > 0).slice(0, 12);
+  if (list === "instruments") return payload.paymentInstruments || [];
+  if (list === "partners") return payload.partners || [];
+  if (list === "employees") return payload.employees || [];
+  if (list === "vat") return payload.vatSummary || [];
+  return [];
+}
+
+function idForListRow(list, row) {
+  return rowKey(list === "vat" ? row.period || row.id : row.id);
+}
+
+function selectedRowsForList(list) {
+  const selected = selectionFor(list);
+  return listRows(list).filter((row) => selected.has(idForListRow(list, row)));
+}
+
+function mountBulkToolbar(list, bodySelector) {
+  const body = document.querySelector(bodySelector);
+  const card = body?.closest(".table-card");
+  if (!card || card.querySelector(`[data-toolbar="${list}"]`)) return;
+  const actions = bulkToolbarConfig[list] || [];
+  const toolbar = document.createElement("div");
+  toolbar.className = "list-toolbar";
+  toolbar.dataset.toolbar = list;
+  toolbar.innerHTML = `
+    <span data-selection-count>0 seçili</span>
+    <div>
+      ${actions.map(([action, label]) => `<button type="button" class="ghost" data-bulk-action="${action}" data-bulk-list="${list}">${label}</button>`).join("")}
+    </div>
+  `;
+  card.prepend(toolbar);
+  toolbar.querySelectorAll("[data-bulk-action]").forEach((button) => {
+    button.addEventListener("click", () => handleBulkAction(button.dataset.bulkList, button.dataset.bulkAction));
+  });
+  updateBulkToolbar(list);
+}
+
+function updateBulkToolbar(list) {
+  const toolbar = document.querySelector(`[data-toolbar="${list}"]`);
+  if (!toolbar) return;
+  const count = selectedIds(list).length;
+  toolbar.querySelector("[data-selection-count]").textContent = count ? `${formatNumber(count)} seçili` : "Seçim yok";
+  toolbar.querySelectorAll("[data-bulk-action]").forEach((button) => {
+    button.disabled = count === 0;
+  });
+}
+
+function updateAllBulkToolbars() {
+  Object.keys(bulkToolbarConfig).forEach(updateBulkToolbar);
+}
+
+function wireSelectAllControls() {
+  document.querySelectorAll("[data-select-all]").forEach((input) => {
+    input.addEventListener("change", () => {
+      const list = input.dataset.selectAll;
+      const selected = selectionFor(list);
+      document.querySelectorAll(`[data-select-list="${list}"]`).forEach((rowInput) => {
+        const id = rowKey(rowInput.dataset.selectId);
+        rowInput.checked = input.checked;
+        if (input.checked) selected.add(id);
+        else selected.delete(id);
+      });
+      input.indeterminate = false;
+      updateBulkToolbar(list);
+    });
+  });
+}
+
+function wireBulkToolbars() {
+  mountBulkToolbar("ap", "#payableRows");
+  mountBulkToolbar("bank", "#bankRows");
+  mountBulkToolbar("paymentInvoices", "#paymentInvoiceRows");
+  mountBulkToolbar("instruments", "#instrumentRows");
+  mountBulkToolbar("partners", "#partnerRows");
+  mountBulkToolbar("employees", "#employeeRows");
+  mountBulkToolbar("vat", "#vatRows");
+  wireSelectAllControls();
+}
+
+function requireSelection(list) {
+  const rows = selectedRowsForList(list);
+  if (!rows.length) {
+    showToast("Önce listeden kayıt seç.", false);
+    return null;
+  }
+  return rows;
+}
+
+async function postBulk(url, payload, successMessage) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "Toplu işlem tamamlanamadı");
+  state.payload = result.dashboard;
+  renderAll();
+  showToast(successMessage);
+}
+
+async function markSelectedPaid(list) {
+  const rows = requireSelection(list);
+  if (!rows) return;
+  try {
+    await postBulk(
+      "/api/purchase-invoices/mark-paid",
+      { ids: rows.map((row) => row.id) },
+      "Seçili faturalar ödenmiş işaretlendi"
+    );
+    selectionFor(list).clear();
+    if (list !== "ap") selectionFor("ap").clear();
+    if (list !== "paymentInvoices") selectionFor("paymentInvoices").clear();
+    renderAll();
+    updateAllBulkToolbars();
+  } catch (error) {
+    showToast(error.message, false);
+  }
+}
+
+function exportRows(list) {
+  const rows = requireSelection(list);
+  if (!rows) return;
+  const columns = Object.keys(rows[0] || {});
+  const csv = [
+    columns.join(","),
+    ...rows.map((row) =>
+      columns
+        .map((key) => `"${String(row[key] ?? "").replaceAll('"', '""')}"`)
+        .join(",")
+    ),
+  ].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `${list}-secili-kayitlar.csv`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+  showToast("Seçili kayıtlar dışa aktarıldı");
+}
+
+function openBulkPaymentRun(list) {
+  const rows = requireSelection(list);
+  if (!rows) return;
+  openActionModal(
+    "Toplu ödeme run",
+    "Seçili faturalar ödeme hazırlığına alınır.",
+    `<div class="compact-list">${rows
+      .map((item) => `<article class="compact-item"><div><b>${escapeHtml(item.partner || "-")}</b><span>${escapeHtml(item.invoice_no || "-")}</span></div><strong>${formatMoney(item.remaining_amount)}</strong></article>`)
+      .join("")}</div>`
+  );
+}
+
+function openBulkVoucher(list) {
+  const rows = requireSelection(list);
+  if (!rows) return;
+  const total = rows.reduce((sum, row) => sum + Number(row.gross_total || 0), 0);
+  const vat = rows.reduce((sum, row) => sum + Number(row.vat_amount || 0), 0);
+  openActionModal(
+    "Toplu fiş önizleme",
+    `${formatNumber(rows.length)} kayıt için özet fiş.`,
+    `<div class="result-grid">
+      <div><span>Kayıt</span><b>${formatNumber(rows.length)}</b></div>
+      <div><span>Toplam</span><b>${formatMoney(total)}</b></div>
+      <div><span>KDV</span><b>${formatMoney(vat)}</b></div>
+      <div><span>Net gider</span><b>${formatMoney(total - vat)}</b></div>
+    </div>`
+  );
+}
+
+function openBulkBankMatch(list, expense = false) {
+  const rows = requireSelection(list);
+  if (!rows) return;
+  const total = rows.reduce((sum, row) => sum + Number(row.net_amount || 0), 0);
+  openActionModal(
+    expense ? "Toplu masraf yaz" : "Toplu banka eşleştirme",
+    "Seçili ekstre satırları için işlem ön izlemesi.",
+    `<div class="result-grid">
+      <div><span>Satır</span><b>${formatNumber(rows.length)}</b></div>
+      <div><span>Net tutar</span><b>${formatMoney(total)}</b></div>
+      <div><span>İşlem</span><b>${expense ? "Masraf" : "Eşleştirme"}</b></div>
+    </div>`
+  );
+}
+
+function openBulkEmployeeSite() {
+  const rows = requireSelection("employees");
+  if (!rows) return;
+  const sites = state.payload?.projectSites || [];
+  openActionModal(
+    "Toplu şantiye ata",
+    `${formatNumber(rows.length)} personel güncellenecek.`,
+    `
+      <form id="bulkSiteForm" class="record-form">
+        <label>Mevcut şantiye
+          <select name="projectSiteName">
+            <option value="">Atanmadı</option>
+            ${sites.map((site) => `<option value="${escapeHtml(site.name)}">${escapeHtml(site.name)}</option>`).join("")}
+          </select>
+        </label>
+        <label>Yeni şantiye<input name="newProjectSiteName" /></label>
+        <footer class="modal-actions">
+          <button type="button" class="ghost" id="cancelActionModal">Vazgeç</button>
+          <button type="submit" class="primary">Kaydet</button>
+        </footer>
+      </form>
+    `
+  );
+  document.querySelector("#cancelActionModal").addEventListener("click", closeActionModal);
+  document.querySelector("#bulkSiteForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(event.currentTarget).entries());
+    const projectSiteName = data.newProjectSiteName.trim() || data.projectSiteName;
+    try {
+      await postBulk("/api/employees/bulk-site", { ids: rows.map((row) => row.id), projectSiteName }, "Şantiye ataması kaydedildi");
+      selectionFor("employees").clear();
+      renderAll();
+      updateAllBulkToolbars();
+      closeActionModal();
+    } catch (error) {
+      showToast(error.message, false);
+    }
+  });
+}
+
+function openBulkAdvance() {
+  const rows = requireSelection("employees");
+  if (!rows) return;
+  openActionModal(
+    "Toplu avans gir",
+    `${formatNumber(rows.length)} personel için aynı avans tutarı yazılır.`,
+    `
+      <form id="bulkAdvanceForm" class="record-form">
+        <label>Avans tutarı<input name="advanceAmount" type="number" min="0" step="0.01" required /></label>
+        <footer class="modal-actions">
+          <button type="button" class="ghost" id="cancelActionModal">Vazgeç</button>
+          <button type="submit" class="primary">Kaydet</button>
+        </footer>
+      </form>
+    `
+  );
+  document.querySelector("#cancelActionModal").addEventListener("click", closeActionModal);
+  document.querySelector("#bulkAdvanceForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(event.currentTarget).entries());
+    try {
+      await postBulk("/api/employees/bulk-advance", { ids: rows.map((row) => row.id), advanceAmount: data.advanceAmount }, "Avanslar kaydedildi");
+      selectionFor("employees").clear();
+      renderAll();
+      updateAllBulkToolbars();
+      closeActionModal();
+    } catch (error) {
+      showToast(error.message, false);
+    }
+  });
+}
+
+function openSimpleSummary(list, title) {
+  const rows = requireSelection(list);
+  if (!rows) return;
+  const total = rows.reduce((sum, row) => sum + Number(row.amount || row.open_balance || row.net_vat || 0), 0);
+  openActionModal(
+    title,
+    "Seçili kayıt özeti.",
+    `<div class="result-grid">
+      <div><span>Kayıt</span><b>${formatNumber(rows.length)}</b></div>
+      <div><span>Toplam</span><b>${formatMoney(total)}</b></div>
+    </div>`
+  );
+}
+
+function handleBulkAction(list, action) {
+  if (action === "paymentRun") return openBulkPaymentRun(list);
+  if (action === "markPaid") return markSelectedPaid(list);
+  if (action === "voucher") return openBulkVoucher(list);
+  if (action === "bankMatch") return openBulkBankMatch(list);
+  if (action === "bankExpense") return openBulkBankMatch(list, true);
+  if (action === "bulkAdvance") return openBulkAdvance();
+  if (action === "bulkSite") return openBulkEmployeeSite();
+  if (action === "instrumentSummary") return openSimpleSummary(list, "Portföy özeti");
+  if (action === "partnerSummary") return openSimpleSummary(list, "Cari özeti");
+  if (action === "vatCheck") return runValidation();
+  if (action === "export") return exportRows(list);
+}
+
 function wireCommandButtons() {
   const topButtons = document.querySelectorAll(".app-actions button:not(#logoutButton)");
   topButtons[0]?.addEventListener("click", runSimulation);
@@ -775,6 +1174,7 @@ function renderAll() {
   renderEmployees(payload.employees || []);
   renderVat(payload.vatSummary || []);
   renderImportInfo(payload);
+  updateAllBulkToolbars();
 }
 
 async function loadDashboard() {
@@ -924,6 +1324,7 @@ async function boot() {
   wireNavigation();
   wireSearch();
   wireCommandButtons();
+  wireBulkToolbars();
   wireUpload();
   wireLogout();
   wireAdvanceModal();

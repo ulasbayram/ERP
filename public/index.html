@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>AKIM ERP</title>
-    <link rel="stylesheet" href="/styles.css?v=20260730-actions" />
+    <link rel="stylesheet" href="/styles.css?v=20260730-bulk" />
   </head>
   <body>
     <div class="shell">
@@ -129,6 +129,7 @@
               <table>
                 <thead>
                   <tr>
+                    <th class="select-col"><input type="checkbox" data-select-all="ap" aria-label="Tüm faturaları seç" /></th>
                     <th>Fatura Tarihi</th>
                     <th>Belge No</th>
                     <th>Cari</th>
@@ -163,6 +164,7 @@
                 <table>
                   <thead>
                     <tr>
+                      <th class="select-col"><input type="checkbox" data-select-all="bank" aria-label="Tüm ekstreleri seç" /></th>
                       <th>Tarih</th>
                       <th>Açıklama</th>
                       <th>Grup</th>
@@ -200,7 +202,7 @@
               <div class="block-head"><h2>Açık Faturalar</h2><button class="text-button">Vade sırası</button></div>
               <div class="table-card flat">
                 <table>
-                  <thead><tr><th>Vade</th><th>Cari</th><th>Fatura</th><th>Kalan</th></tr></thead>
+                  <thead><tr><th class="select-col"><input type="checkbox" data-select-all="paymentInvoices" aria-label="Tüm açık faturaları seç" /></th><th>Vade</th><th>Cari</th><th>Fatura</th><th>Kalan</th></tr></thead>
                   <tbody id="paymentInvoiceRows"></tbody>
                 </table>
               </div>
@@ -209,7 +211,7 @@
               <div class="block-head"><h2>Çek / Senet Portföyü</h2><button class="text-button">Portföy durumu</button></div>
               <div class="table-card flat">
                 <table>
-                  <thead><tr><th>Vade</th><th>Cari</th><th>No</th><th>Tutar</th></tr></thead>
+                  <thead><tr><th class="select-col"><input type="checkbox" data-select-all="instruments" aria-label="Tüm çek senetleri seç" /></th><th>Vade</th><th>Cari</th><th>No</th><th>Tutar</th></tr></thead>
                   <tbody id="instrumentRows"></tbody>
                 </table>
               </div>
@@ -227,7 +229,7 @@
           </div>
           <div class="table-card">
             <table>
-              <thead><tr><th>Cari</th><th>Tip</th><th>Fatura</th><th>Toplam</th><th>Açık Bakiye</th></tr></thead>
+              <thead><tr><th class="select-col"><input type="checkbox" data-select-all="partners" aria-label="Tüm carileri seç" /></th><th>Cari</th><th>Tip</th><th>Fatura</th><th>Toplam</th><th>Açık Bakiye</th></tr></thead>
               <tbody id="partnerRows"></tbody>
             </table>
           </div>
@@ -245,6 +247,7 @@
             <table>
               <thead>
                 <tr>
+                  <th class="select-col"><input type="checkbox" data-select-all="employees" aria-label="Tüm personeli seç" /></th>
                   <th>Ad Soyad</th>
                   <th>İşe Giriş</th>
                   <th>Kıdem</th>
@@ -272,7 +275,7 @@
           </div>
           <div class="table-card">
             <table>
-              <thead><tr><th>Dönem</th><th>Alış Matrah</th><th>Alış KDV</th><th>Satış Matrah</th><th>Tevkifat</th><th>Net KDV</th></tr></thead>
+              <thead><tr><th class="select-col"><input type="checkbox" data-select-all="vat" aria-label="Tüm vergi satırlarını seç" /></th><th>Dönem</th><th>Alış Matrah</th><th>Alış KDV</th><th>Satış Matrah</th><th>Tevkifat</th><th>Net KDV</th></tr></thead>
               <tbody id="vatRows"></tbody>
             </table>
           </div>
@@ -381,6 +384,6 @@
         </form>
       </section>
     </div>
-    <script src="/app.js?v=20260730-actions"></script>
+    <script src="/app.js?v=20260730-bulk"></script>
   </body>
 </html>
