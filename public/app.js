@@ -218,9 +218,11 @@ function renderInspector() {
       <dt>Ödenen</dt><dd>${formatMoney(row.paid_amount)}</dd>
       <dt>Kalan</dt><dd>${formatMoney(row.remaining_amount)}</dd>
     </dl>
-    <button class="primary wide">Ödeme için seç</button>
-    <button class="ghost wide">Muhasebe fişi</button>
+    <button class="primary wide" data-action-payment-select>Ödeme için seç</button>
+    <button class="ghost wide" data-action-voucher>Muhasebe fişi</button>
   `;
+  el.querySelector("[data-action-payment-select]")?.addEventListener("click", () => openPaymentRun(row));
+  el.querySelector("[data-action-voucher]")?.addEventListener("click", () => openVoucherPreview(row));
 }
 
 function renderBank(rows = []) {
@@ -234,12 +236,19 @@ function renderBank(rows = []) {
               <td>${escapeHtml(row.transaction_type || "-")}</td>
               <td>${escapeHtml(row.transaction_group || "-")} / ${escapeHtml(row.sub_category || "-")}</td>
               <td class="amount">${formatMoney(row.net_amount)}</td>
-              <td><button class="ghost">Eşleştir</button></td>
+              <td><button class="ghost" data-bank-match="${row.id}">Eşleştir</button></td>
             </tr>
           `
         )
         .join("")
     : `<tr><td colspan="5">Kayıt bulunamadı.</td></tr>`;
+
+  document.querySelectorAll("[data-bank-match]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const row = rows.find((item) => item.id === Number(button.dataset.bankMatch));
+      openBankMatch(row);
+    });
+  });
 }
 
 function renderPayments(payables = [], instruments = []) {
@@ -467,6 +476,292 @@ function renderImportInfo(payload = {}) {
   }
 }
 
+function activeTab() {
+  return document.querySelector(".view.active")?.id || "home";
+}
+
+function defaultRecordType() {
+  const tab = activeTab();
+  if (tab === "partners") return "partner";
+  if (tab === "employees") return "employee";
+  return "invoice";
+}
+
+function showToast(message, ok = true) {
+  setStatus(message, ok);
+  let toast = document.querySelector("#actionToast");
+  if (!toast) {
+    toast = document.createElement("div");
+    toast.id = "actionToast";
+    toast.className = "action-toast";
+    document.body.appendChild(toast);
+  }
+  toast.textContent = message;
+  toast.classList.toggle("error", !ok);
+  toast.hidden = false;
+  clearTimeout(showToast.timer);
+  showToast.timer = setTimeout(() => {
+    toast.hidden = true;
+  }, 3200);
+}
+
+function ensureActionModal() {
+  let modal = document.querySelector("#actionModal");
+  if (modal) return modal;
+  modal = document.createElement("div");
+  modal.id = "actionModal";
+  modal.className = "modal-backdrop";
+  modal.hidden = true;
+  modal.innerHTML = `
+    <section class="modal action-modal" role="dialog" aria-modal="true" aria-labelledby="actionModalTitle">
+      <header class="modal-head">
+        <div>
+          <h2 id="actionModalTitle"></h2>
+          <p id="actionModalSubtitle"></p>
+        </div>
+        <button type="button" class="icon-button" id="closeActionModal" aria-label="Kapat">×</button>
+      </header>
+      <div id="actionModalBody" class="modal-body"></div>
+    </section>
+  `;
+  document.body.appendChild(modal);
+  modal.querySelector("#closeActionModal").addEventListener("click", closeActionModal);
+  modal.addEventListener("click", (event) => {
+    if (event.target.id === "actionModal") closeActionModal();
+  });
+  return modal;
+}
+
+function openActionModal(title, subtitle, bodyHtml) {
+  const modal = ensureActionModal();
+  modal.querySelector("#actionModalTitle").textContent = title;
+  modal.querySelector("#actionModalSubtitle").textContent = subtitle || "";
+  modal.querySelector("#actionModalBody").innerHTML = bodyHtml;
+  modal.hidden = false;
+}
+
+function closeActionModal() {
+  const modal = document.querySelector("#actionModal");
+  if (modal) modal.hidden = true;
+}
+
+function recordFields(type) {
+  if (type === "partner") {
+    return `
+      <label>Cari adı<input name="name" required /></label>
+      <label>Tip
+        <select name="partnerType">
+          <option value="vendor">Tedarikçi</option>
+          <option value="customer">Müşteri</option>
+        </select>
+      </label>
+    `;
+  }
+  if (type === "employee") {
+    return `
+      <label>Ad soyad<input name="fullName" required /></label>
+      <label>İşe giriş<input name="hireDate" type="date" /></label>
+      <label>Kıdem / meslek<input name="jobTitle" placeholder="Betonarme Demircisi" /></label>
+      <label>Şantiye<input name="projectSite" /></label>
+      <label>Çalıştığı gün<input name="workedDays" type="number" min="0" step="1" value="0" /></label>
+      <label>Aylık maaş<input name="monthlySalary" type="number" min="0" step="0.01" value="0" /></label>
+      <label>Avans<input name="advanceAmount" type="number" min="0" step="0.01" value="0" /></label>
+    `;
+  }
+  return `
+    <label>Cari<input name="partnerName" required /></label>
+    <label>Fatura no<input name="invoiceNo" /></label>
+    <label>Fatura tarihi<input name="invoiceDate" type="date" /></label>
+    <label>Vade tarihi<input name="dueDate" type="date" /></label>
+    <label>Şantiye / maliyet merkezi<input name="projectSite" /></label>
+    <label>Gider kategorisi<input name="costCategory" /></label>
+    <label>KDV oranı<input name="vatRate" type="number" min="0" step="0.01" value="20" /></label>
+    <label>Genel toplam<input name="grossTotal" type="number" min="0" step="0.01" required /></label>
+    <label>Ödenen<input name="paidAmount" type="number" min="0" step="0.01" value="0" /></label>
+    <label>Açıklama<input name="description" /></label>
+  `;
+}
+
+function openNewRecordModal(type = defaultRecordType()) {
+  openActionModal(
+    "Yeni kayıt",
+    "Manuel veri girişi doğrudan ERP veritabanına kaydedilir.",
+    `
+      <form id="newRecordForm" class="record-form">
+        <label>Kayıt tipi
+          <select id="recordType" name="recordType">
+            <option value="invoice">Alış faturası</option>
+            <option value="partner">Cari</option>
+            <option value="employee">Personel</option>
+          </select>
+        </label>
+        <div id="recordFields" class="record-grid"></div>
+        <footer class="modal-actions">
+          <button type="button" class="ghost" id="cancelActionModal">Vazgeç</button>
+          <button type="submit" class="primary">Kaydet</button>
+        </footer>
+      </form>
+    `
+  );
+  const select = document.querySelector("#recordType");
+  const fields = document.querySelector("#recordFields");
+  select.value = type;
+  fields.innerHTML = recordFields(type);
+  select.addEventListener("change", () => {
+    fields.innerHTML = recordFields(select.value);
+  });
+  document.querySelector("#cancelActionModal").addEventListener("click", closeActionModal);
+  document.querySelector("#newRecordForm").addEventListener("submit", saveNewRecord);
+  fields.querySelector("input, select")?.focus();
+}
+
+async function saveNewRecord(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const type = form.querySelector("[name='recordType']").value;
+  const endpoint = {
+    invoice: "/api/purchase-invoices",
+    partner: "/api/partners",
+    employee: "/api/employees",
+  }[type];
+  const payload = Object.fromEntries(new FormData(form).entries());
+  delete payload.recordType;
+  const button = form.querySelector("button[type='submit']");
+  button.disabled = true;
+  button.textContent = "Kaydediliyor";
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Kayıt kaydedilemedi");
+    state.payload = result.dashboard;
+    state.selectedPayable = null;
+    renderAll();
+    closeActionModal();
+    showToast("Kayıt kaydedildi");
+  } catch (error) {
+    showToast(error.message, false);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Kaydet";
+  }
+}
+
+function runValidation() {
+  const controls = state.payload?.controls || [];
+  const risky = controls.filter((control) => Number(control.count || 0) > 0);
+  activateTab("controls");
+  openActionModal(
+    "Doğrulama sonucu",
+    risky.length ? "Kapanıştan önce ilgilenilmesi gereken başlıklar var." : "Bloklayıcı kontrol bulunmadı.",
+    risky.length
+      ? `<div class="control-list">${risky.map(controlMarkup).join("")}</div>`
+      : `<div class="empty-state">Kritik veri uyarısı yok.</div>`
+  );
+  showToast("Doğrulama çalıştırıldı", risky.length === 0);
+}
+
+function runSimulation() {
+  const payables = state.payload?.payables || [];
+  const open = payables.filter((row) => Number(row.remaining_amount || 0) > 0);
+  const dueNow = open.reduce((sum, row) => sum + Number(row.remaining_amount || 0), 0);
+  const bankNet = Number(state.payload?.kpis?.bankNet || 0);
+  openActionModal(
+    "Nakit simülasyonu",
+    "Mevcut açık faturalar ve banka neti üzerinden hızlı görünüm.",
+    `
+      <div class="result-grid">
+        <div><span>Açık ödeme</span><b>${formatMoney(dueNow)}</b></div>
+        <div><span>Banka net</span><b>${formatMoney(bankNet)}</b></div>
+        <div><span>Simüle bakiye</span><b>${formatMoney(bankNet - dueNow)}</b></div>
+        <div><span>Açık kayıt</span><b>${formatNumber(open.length)}</b></div>
+      </div>
+    `
+  );
+  showToast("Simülasyon hazır");
+}
+
+function openPaymentRun(row = null) {
+  const payables = row ? [row] : (state.payload?.payables || []).filter((item) => Number(item.remaining_amount || 0) > 0).slice(0, 10);
+  openActionModal(
+    "Ödeme run",
+    "Seçilen açık faturalar ödeme hazırlığına alınabilir.",
+    `<div class="compact-list">${payables
+      .map((item) => `<article class="compact-item"><div><b>${escapeHtml(item.partner || "-")}</b><span>${escapeHtml(item.invoice_no || "-")}</span></div><strong>${formatMoney(item.remaining_amount)}</strong></article>`)
+      .join("") || '<div class="empty-state">Açık fatura yok.</div>'}</div>`
+  );
+}
+
+function openVoucherPreview(row) {
+  openActionModal(
+    "Muhasebe fişi",
+    "Ön izleme amaçlı fiş satırları.",
+    `
+      <div class="compact-list">
+        <article class="compact-item"><div><b>320 Satıcılar</b><span>${escapeHtml(row.partner || "-")}</span></div><strong>${formatMoney(row.gross_total)}</strong></article>
+        <article class="compact-item"><div><b>191 İndirilecek KDV</b><span>${escapeHtml(row.invoice_no || "-")}</span></div><strong>${formatMoney(row.vat_amount || 0)}</strong></article>
+      </div>
+    `
+  );
+}
+
+function openBankMatch(row) {
+  if (!row) return;
+  openActionModal(
+    "Banka eşleştirme",
+    "Ekstre satırı için önerilen muhasebe aksiyonu.",
+    `<div class="compact-list">
+      <article class="compact-item"><div><b>${escapeHtml(row.transaction_type || "Ekstre")}</b><span>${escapeHtml(row.transaction_group || "-")}</span></div><strong>${formatMoney(row.net_amount)}</strong></article>
+      <article class="compact-item"><div><b>Öneri</b><span>Cari/fatura veya masraf hesabı ile eşleştir</span></div><strong>Hazır</strong></article>
+    </div>`
+  );
+}
+
+function focusImport() {
+  activateTab("import");
+  document.querySelector("#fileInput")?.focus();
+  showToast("Import Center açıldı");
+}
+
+function downloadTemplate() {
+  const csv = [
+    "Tip,Cari,Ad Soyad,Fatura No,Tarih,Vade,Genel Toplam,Odenen,Maas,Avans,Santiye",
+    "Fatura,ABC Tedarik,,FTR-001,2026-07-30,2026-08-15,10000,0,,,Merkez",
+    "Personel,,Ali Veli,,,,,30000,5000,Merkez",
+  ].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = "erp_import_sablonu.csv";
+  link.click();
+  URL.revokeObjectURL(link.href);
+  showToast("Şablon indirildi");
+}
+
+function wireCommandButtons() {
+  const topButtons = document.querySelectorAll(".app-actions button:not(#logoutButton)");
+  topButtons[0]?.addEventListener("click", runSimulation);
+  topButtons[1]?.addEventListener("click", runValidation);
+  topButtons[2]?.addEventListener("click", () => openNewRecordModal());
+
+  document.querySelector("#ap .page-head .primary")?.addEventListener("click", () => openNewRecordModal("invoice"));
+  document.querySelector("#bank .page-head .primary")?.addEventListener("click", focusImport);
+  document.querySelector("#payments .page-head .primary")?.addEventListener("click", () => openPaymentRun());
+  document.querySelector("#partners .page-head .primary")?.addEventListener("click", () => openNewRecordModal("partner"));
+  document.querySelector("#employees .page-head .primary")?.addEventListener("click", () => openNewRecordModal("employee"));
+  document.querySelector("#tax .page-head .primary")?.addEventListener("click", runValidation);
+  document.querySelector("#controls .page-head .primary")?.addEventListener("click", runValidation);
+  document.querySelector("#import .page-head .ghost")?.addEventListener("click", downloadTemplate);
+
+  document.querySelectorAll("#home .block-head .text-button").forEach((button) => {
+    button.addEventListener("click", runValidation);
+  });
+  document.querySelector("#ap .filterbar .ghost:last-child")?.addEventListener("click", downloadTemplate);
+}
+
 function renderAll() {
   const payload = state.payload || {};
   renderKpis(payload.kpis);
@@ -628,6 +923,7 @@ function wireSiteModal() {
 async function boot() {
   wireNavigation();
   wireSearch();
+  wireCommandButtons();
   wireUpload();
   wireLogout();
   wireAdvanceModal();

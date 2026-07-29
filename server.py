@@ -28,7 +28,7 @@ SCHEMA = ROOT / "schema.sql"
 SESSION_COOKIE = "akim_erp_session"
 PASSWORD_ITERATIONS = 600_000
 SESSION_DAYS = int(os.environ.get("ERP_SESSION_DAYS", "7"))
-COOKIE_SECURE = os.environ.get("ERP_COOKIE_SECURE", "false").lower() == "true"
+COOKIE_SECURE_MODE = os.environ.get("ERP_COOKIE_SECURE", "auto").strip().lower()
 INVITE_CODE = os.environ.get("ERP_INVITE_CODE", "")
 ALLOW_OPEN_REGISTRATION = os.environ.get("ERP_ALLOW_OPEN_REGISTRATION", "false").lower() == "true"
 HOST = os.environ.get("ERP_HOST", "127.0.0.1")
@@ -223,6 +223,23 @@ def same_origin_allowed(headers) -> bool:
         return True
     host = headers.get("Host", "")
     return origin in {f"http://{host}", f"https://{host}"}
+
+
+def should_send_secure_cookie(headers) -> bool:
+    if COOKIE_SECURE_MODE in {"1", "true", "yes", "on"}:
+        return True
+    if COOKIE_SECURE_MODE in {"0", "false", "no", "off"}:
+        return False
+
+    forwarded_proto = headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip().lower()
+    forwarded = headers.get("Forwarded", "").lower()
+    cf_visitor = headers.get("Cf-Visitor", "").lower()
+    return (
+        forwarded_proto == "https"
+        or "proto=https" in forwarded
+        or '"scheme":"https"' in cf_visitor
+        or "'scheme':'https'" in cf_visitor
+    )
 
 
 def init_db() -> None:
@@ -886,13 +903,13 @@ class ERPHandler(SimpleHTTPRequestHandler):
             "SameSite=Lax",
             f"Max-Age={SESSION_DAYS * 24 * 60 * 60}",
         ]
-        if COOKIE_SECURE:
+        if should_send_secure_cookie(self.headers):
             parts.append("Secure")
         self.send_header("Set-Cookie", "; ".join(parts))
 
     def clear_auth_cookie(self) -> None:
         parts = [f"{SESSION_COOKIE}=", "Path=/", "HttpOnly", "SameSite=Lax", "Max-Age=0"]
-        if COOKIE_SECURE:
+        if should_send_secure_cookie(self.headers):
             parts.append("Secure")
         self.send_header("Set-Cookie", "; ".join(parts))
 
@@ -1071,6 +1088,158 @@ class ERPHandler(SimpleHTTPRequestHandler):
 
         if parsed.path.startswith("/api/") and not self.current_user():
             self.send_json({"error": "Oturum gerekli."}, 401)
+            return
+
+        if parsed.path == "/api/partners":
+            try:
+                payload = read_json_body(self)
+                name = normalize_text(payload.get("name"))
+                partner_type = normalize_text(payload.get("partnerType")) or "vendor"
+                if not name:
+                    self.send_json({"error": "Cari adı zorunlu."}, 400)
+                    return
+                with connect() as conn:
+                    partner_id = get_or_create_partner(conn, name, partner_type)
+                    conn.execute(
+                        "INSERT INTO audit_events(actor, action, entity_name, entity_id, new_value) VALUES (?, ?, ?, ?, ?)",
+                        (
+                            self.current_user()["email"],
+                            "create_partner",
+                            "business_partners",
+                            str(partner_id),
+                            json.dumps({"name": name, "partner_type": partner_type}, ensure_ascii=False),
+                        ),
+                    )
+                self.send_json({"dashboard": dashboard_payload()})
+            except json.JSONDecodeError:
+                self.send_json({"error": "Geçersiz JSON."}, 400)
+            except Exception as exc:
+                self.send_json({"error": f"Cari kaydedilemedi: {exc}"}, 500)
+            return
+
+        if parsed.path == "/api/employees":
+            try:
+                payload = read_json_body(self)
+                full_name = normalize_text(payload.get("fullName"))
+                if not full_name:
+                    self.send_json({"error": "Personel adı zorunlu."}, 400)
+                    return
+                parts = full_name.split()
+                first_name = parts[0]
+                last_name = " ".join(parts[1:]) if len(parts) > 1 else ""
+                monthly_salary = to_float(payload.get("monthlySalary"))
+                advance_amount = to_float(payload.get("advanceAmount"))
+                worked_days = int(to_float(payload.get("workedDays")))
+                if monthly_salary < 0 or advance_amount < 0 or worked_days < 0:
+                    self.send_json({"error": "Maaş, avans ve gün negatif olamaz."}, 400)
+                    return
+                with connect() as conn:
+                    site_id = get_or_create_site(conn, payload.get("projectSite"))
+                    cur = conn.execute(
+                        """
+                        INSERT INTO employees(
+                          first_name, last_name, full_name, hire_date, job_code,
+                          worked_days, project_site_id, monthly_salary, advance_amount, status
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+                        """,
+                        (
+                            first_name,
+                            last_name,
+                            full_name,
+                            normalize_text(payload.get("hireDate")) or None,
+                            normalize_text(payload.get("jobTitle")) or None,
+                            worked_days,
+                            site_id,
+                            monthly_salary,
+                            advance_amount,
+                        ),
+                    )
+                    conn.execute(
+                        "INSERT INTO audit_events(actor, action, entity_name, entity_id, new_value) VALUES (?, ?, ?, ?, ?)",
+                        (
+                            self.current_user()["email"],
+                            "create_employee",
+                            "employees",
+                            str(cur.lastrowid),
+                            json.dumps({"full_name": full_name}, ensure_ascii=False),
+                        ),
+                    )
+                self.send_json({"dashboard": dashboard_payload()})
+            except json.JSONDecodeError:
+                self.send_json({"error": "Geçersiz JSON."}, 400)
+            except Exception as exc:
+                self.send_json({"error": f"Personel kaydedilemedi: {exc}"}, 500)
+            return
+
+        if parsed.path == "/api/purchase-invoices":
+            try:
+                payload = read_json_body(self)
+                partner_name = normalize_text(payload.get("partnerName"))
+                if not partner_name:
+                    self.send_json({"error": "Cari adı zorunlu."}, 400)
+                    return
+                gross_total = to_float(payload.get("grossTotal"))
+                paid_amount = to_float(payload.get("paidAmount"))
+                vat_rate = to_float(payload.get("vatRate"))
+                if gross_total < 0 or paid_amount < 0 or vat_rate < 0:
+                    self.send_json({"error": "Tutarlar negatif olamaz."}, 400)
+                    return
+                remaining_amount = max(gross_total - paid_amount, 0)
+                payment_status = "paid" if remaining_amount == 0 else ("partial" if paid_amount > 0 else "pending")
+                due_date = normalize_text(payload.get("dueDate")) or None
+                if due_date and remaining_amount > 0:
+                    try:
+                        if datetime.fromisoformat(due_date[:10]).date() < date.today():
+                            payment_status = "overdue"
+                    except ValueError:
+                        pass
+                vat_amount = gross_total * vat_rate / (100 + vat_rate) if vat_rate else 0
+                purchase_amount = gross_total - vat_amount
+                with connect() as conn:
+                    partner_id = get_or_create_partner(conn, partner_name, "vendor")
+                    site_id = get_or_create_site(conn, payload.get("projectSite"))
+                    cur = conn.execute(
+                        """
+                        INSERT INTO purchase_invoices(
+                          invoice_date, invoice_no, partner_id, description, purchase_amount,
+                          vat_rate, project_site_id, cost_category, payment_status, due_date,
+                          vat_amount, gross_total, paid_amount, remaining_amount
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            normalize_text(payload.get("invoiceDate")) or None,
+                            normalize_text(payload.get("invoiceNo")) or None,
+                            partner_id,
+                            normalize_text(payload.get("description")) or None,
+                            purchase_amount,
+                            vat_rate,
+                            site_id,
+                            normalize_text(payload.get("costCategory")) or None,
+                            payment_status,
+                            due_date,
+                            vat_amount,
+                            gross_total,
+                            paid_amount,
+                            remaining_amount,
+                        ),
+                    )
+                    conn.execute(
+                        "INSERT INTO audit_events(actor, action, entity_name, entity_id, new_value) VALUES (?, ?, ?, ?, ?)",
+                        (
+                            self.current_user()["email"],
+                            "create_purchase_invoice",
+                            "purchase_invoices",
+                            str(cur.lastrowid),
+                            json.dumps({"partner": partner_name, "gross_total": gross_total}, ensure_ascii=False),
+                        ),
+                    )
+                self.send_json({"dashboard": dashboard_payload()})
+            except json.JSONDecodeError:
+                self.send_json({"error": "Geçersiz JSON."}, 400)
+            except Exception as exc:
+                self.send_json({"error": f"Fatura kaydedilemedi: {exc}"}, 500)
             return
 
         if parsed.path == "/api/employees/site":
