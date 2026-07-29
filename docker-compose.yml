@@ -13,6 +13,8 @@ services:
       - ERP_MAX_UPLOAD_BYTES=${ERP_MAX_UPLOAD_BYTES:-10485760}
     expose:
       - "8088"
+    ports:
+      - "8088:8088"
     volumes:
       - erp_data:/app/data
     restart: unless-stopped
