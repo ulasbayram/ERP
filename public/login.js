@@ -15,20 +15,31 @@ function setMode(mode) {
   setMessage("");
 }
 
+async function readJsonResponse(response, fallbackMessage = "İşlem başarısız.") {
+  const text = await response.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    const preview = text.replace(/\s+/g, " ").slice(0, 120);
+    throw new Error(`${fallbackMessage} Sunucu JSON yerine farklı bir cevap döndü (${response.status}). ${preview}`);
+  }
+  if (!response.ok) throw new Error(data.error || fallbackMessage);
+  return data;
+}
+
 async function postJson(url, payload) {
   const response = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || "İşlem başarısız.");
-  return data;
+  return readJsonResponse(response, "İşlem başarısız.");
 }
 
 async function loadConfig() {
   const response = await fetch("/api/auth/config");
-  state.config = await response.json();
+  state.config = await readJsonResponse(response, "Ayarlar alınamadı.");
   document.querySelector("[data-mode='register']").hidden = !state.config.registrationAllowed;
   document.querySelector("#inviteWrap").hidden = !state.config.inviteRequired;
   if (state.config.firstUser) {

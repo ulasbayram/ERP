@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import cgi
 import hashlib
@@ -200,8 +200,14 @@ def mask_identifier(value: str, visible: int = 4) -> str:
 
 def connect() -> sqlite3.Connection:
     DATA.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 30000")
+    try:
+        conn.execute("PRAGMA journal_mode = WAL")
+    except sqlite3.OperationalError:
+        pass
+    conn.execute("PRAGMA synchronous = NORMAL")
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
@@ -249,7 +255,7 @@ def init_db() -> None:
         conn.executescript(SCHEMA.read_text(encoding="utf-8"))
         conn.execute(
             "INSERT OR IGNORE INTO companies(name) VALUES (?)",
-            ("AKIM Yapı ERP Taslak",),
+            ("Ulaş Bayram ERP",),
         )
 
 
@@ -653,7 +659,7 @@ def dashboard_payload() -> dict:
             dict(row)
             for row in conn.execute(
                 """
-                SELECT transaction_date, transaction_type, transaction_group, sub_category, net_amount
+                SELECT id, transaction_date, transaction_type, transaction_group, sub_category, net_amount
                 FROM bank_statement_lines
                 ORDER BY transaction_date DESC
                 LIMIT 8
@@ -666,7 +672,8 @@ def dashboard_payload() -> dict:
             for row in conn.execute(
                 """
                 SELECT p.id, p.invoice_date, p.due_date, p.invoice_no, b.name AS partner,
-                       p.gross_total, p.paid_amount, p.remaining_amount, p.payment_status,
+                       p.purchase_amount, p.vat_amount, p.gross_total, p.paid_amount,
+                       p.remaining_amount, p.payment_status,
                        COALESCE(s.name, 'Atanmadı') AS project_site
                 FROM purchase_invoices p
                 LEFT JOIN business_partners b ON b.id = p.partner_id

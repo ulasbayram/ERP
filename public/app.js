@@ -151,6 +151,19 @@ function setStatus(text, ok = true) {
   el.style.color = ok ? "#2f7a4f" : "#a66a00";
 }
 
+async function readJsonResponse(response, fallbackMessage = "İşlem tamamlanamadı") {
+  const text = await response.text();
+  let payload = null;
+  try {
+    payload = text ? JSON.parse(text) : {};
+  } catch {
+    const preview = text.replace(/\s+/g, " ").slice(0, 120);
+    throw new Error(`${fallbackMessage}: Sunucu JSON yerine farklı bir cevap döndü (${response.status}). ${preview}`);
+  }
+  if (!response.ok) throw new Error(payload.error || fallbackMessage);
+  return payload;
+}
+
 function includesQuery(row) {
   if (!state.query) return true;
   return JSON.stringify(row).toLocaleLowerCase("tr-TR").includes(state.query);
@@ -443,8 +456,7 @@ async function saveSiteFromModal() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ employeeId, projectSiteName }),
     });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || "Şantiye kaydedilemedi");
+    const payload = await readJsonResponse(response, "Şantiye kaydedilemedi");
     state.payload = payload.dashboard;
     renderAll();
     closeSiteModal();
@@ -497,8 +509,7 @@ async function saveCompensationFromModal() {
         advanceAmount,
       }),
     });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || "Personel kaydedilemedi");
+    const payload = await readJsonResponse(response, "Personel kaydedilemedi");
     state.payload = payload.dashboard;
     renderAll();
     closeAdvanceModal();
@@ -708,8 +719,7 @@ async function saveNewRecord(event) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "Kayıt kaydedilemedi");
+    const result = await readJsonResponse(response, "Kayıt kaydedilemedi");
     state.payload = result.dashboard;
     state.selectedPayable = null;
     renderAll();
@@ -740,16 +750,37 @@ function runValidation() {
 function runSimulation() {
   const payables = state.payload?.payables || [];
   const open = payables.filter((row) => Number(row.remaining_amount || 0) > 0);
-  const dueNow = open.reduce((sum, row) => sum + Number(row.remaining_amount || 0), 0);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const inSevenDays = new Date(today);
+  inSevenDays.setDate(today.getDate() + 7);
+  const inThirtyDays = new Date(today);
+  inThirtyDays.setDate(today.getDate() + 30);
+  const datedOpen = open.map((row) => ({ ...row, due: row.due_date ? new Date(String(row.due_date).slice(0, 10)) : null }));
+  const overdue = datedOpen.filter((row) => row.due && row.due < today).reduce((sum, row) => sum + Number(row.remaining_amount || 0), 0);
+  const dueSeven = datedOpen
+    .filter((row) => row.due && row.due >= today && row.due <= inSevenDays)
+    .reduce((sum, row) => sum + Number(row.remaining_amount || 0), 0);
+  const dueThirty = datedOpen
+    .filter((row) => row.due && row.due > inSevenDays && row.due <= inThirtyDays)
+    .reduce((sum, row) => sum + Number(row.remaining_amount || 0), 0);
+  const noDue = datedOpen.filter((row) => !row.due).reduce((sum, row) => sum + Number(row.remaining_amount || 0), 0);
+  const employeePayable = (state.payload?.employees || []).reduce((sum, row) => sum + Number(row.paid_salary || 0), 0);
+  const totalNeed = overdue + dueSeven + employeePayable;
   const bankNet = Number(state.payload?.kpis?.bankNet || 0);
   openActionModal(
     "Nakit simülasyonu",
-    "Mevcut açık faturalar ve banka neti üzerinden hızlı görünüm.",
+    "Vadesi gelen ödeme, yakın dönem yükü ve personel maaşı üzerinden hızlı görünüm.",
     `
       <div class="result-grid">
-        <div><span>Açık ödeme</span><b>${formatMoney(dueNow)}</b></div>
+        <div><span>Geciken</span><b>${formatMoney(overdue)}</b></div>
+        <div><span>7 gün</span><b>${formatMoney(dueSeven)}</b></div>
+        <div><span>8-30 gün</span><b>${formatMoney(dueThirty)}</b></div>
+        <div><span>Vadesiz açık</span><b>${formatMoney(noDue)}</b></div>
+        <div><span>Personel net</span><b>${formatMoney(employeePayable)}</b></div>
         <div><span>Banka net</span><b>${formatMoney(bankNet)}</b></div>
-        <div><span>Simüle bakiye</span><b>${formatMoney(bankNet - dueNow)}</b></div>
+        <div><span>Bugün ihtiyaç</span><b>${formatMoney(totalNeed)}</b></div>
+        <div><span>Simüle bakiye</span><b>${formatMoney(bankNet - totalNeed)}</b></div>
         <div><span>Açık kayıt</span><b>${formatNumber(open.length)}</b></div>
       </div>
     `
@@ -759,9 +790,10 @@ function runSimulation() {
 
 function openPaymentRun(row = null) {
   const payables = row ? [row] : (state.payload?.payables || []).filter((item) => Number(item.remaining_amount || 0) > 0).slice(0, 10);
+  const total = payables.reduce((sum, item) => sum + Number(item.remaining_amount || 0), 0);
   openActionModal(
     "Ödeme run",
-    "Seçilen açık faturalar ödeme hazırlığına alınabilir.",
+    `${formatNumber(payables.length)} kayıt için toplam ${formatMoney(total)} ödeme hazırlığı.`,
     `<div class="compact-list">${payables
       .map((item) => `<article class="compact-item"><div><b>${escapeHtml(item.partner || "-")}</b><span>${escapeHtml(item.invoice_no || "-")}</span></div><strong>${formatMoney(item.remaining_amount)}</strong></article>`)
       .join("") || '<div class="empty-state">Açık fatura yok.</div>'}</div>`
@@ -769,13 +801,17 @@ function openPaymentRun(row = null) {
 }
 
 function openVoucherPreview(row) {
+  const vatAmount = Number(row.vat_amount || 0);
+  const expenseAmount = Number(row.purchase_amount || 0) || Math.max(Number(row.gross_total || 0) - vatAmount, 0);
+  const grossTotal = Number(row.gross_total || 0);
   openActionModal(
     "Muhasebe fişi",
-    "Ön izleme amaçlı fiş satırları.",
+    "Alış faturası için borç/alacak dengeli ön izleme.",
     `
       <div class="compact-list">
-        <article class="compact-item"><div><b>320 Satıcılar</b><span>${escapeHtml(row.partner || "-")}</span></div><strong>${formatMoney(row.gross_total)}</strong></article>
-        <article class="compact-item"><div><b>191 İndirilecek KDV</b><span>${escapeHtml(row.invoice_no || "-")}</span></div><strong>${formatMoney(row.vat_amount || 0)}</strong></article>
+        <article class="compact-item"><div><b>Borç · 770/740 Gider</b><span>${escapeHtml(row.invoice_no || "-")}</span></div><strong>${formatMoney(expenseAmount)}</strong></article>
+        <article class="compact-item"><div><b>Borç · 191 İndirilecek KDV</b><span>${escapeHtml(row.partner || "-")}</span></div><strong>${formatMoney(vatAmount)}</strong></article>
+        <article class="compact-item"><div><b>Alacak · 320 Satıcılar</b><span>${escapeHtml(row.partner || "-")}</span></div><strong>${formatMoney(grossTotal)}</strong></article>
       </div>
     `
   );
@@ -949,8 +985,7 @@ async function postBulk(url, payload, successMessage) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.error || "Toplu işlem tamamlanamadı");
+  const result = await readJsonResponse(response, "Toplu işlem tamamlanamadı");
   state.payload = result.dashboard;
   renderAll();
   showToast(successMessage);
@@ -999,9 +1034,10 @@ function exportRows(list) {
 function openBulkPaymentRun(list) {
   const rows = requireSelection(list);
   if (!rows) return;
+  const total = rows.reduce((sum, item) => sum + Number(item.remaining_amount || 0), 0);
   openActionModal(
     "Toplu ödeme run",
-    "Seçili faturalar ödeme hazırlığına alınır.",
+    `${formatNumber(rows.length)} seçili kayıt için toplam ${formatMoney(total)} ödeme hazırlığı.`,
     `<div class="compact-list">${rows
       .map((item) => `<article class="compact-item"><div><b>${escapeHtml(item.partner || "-")}</b><span>${escapeHtml(item.invoice_no || "-")}</span></div><strong>${formatMoney(item.remaining_amount)}</strong></article>`)
       .join("")}</div>`
@@ -1013,14 +1049,18 @@ function openBulkVoucher(list) {
   if (!rows) return;
   const total = rows.reduce((sum, row) => sum + Number(row.gross_total || 0), 0);
   const vat = rows.reduce((sum, row) => sum + Number(row.vat_amount || 0), 0);
+  const expense = rows.reduce((sum, row) => {
+    const vatAmount = Number(row.vat_amount || 0);
+    return sum + (Number(row.purchase_amount || 0) || Math.max(Number(row.gross_total || 0) - vatAmount, 0));
+  }, 0);
   openActionModal(
     "Toplu fiş önizleme",
-    `${formatNumber(rows.length)} kayıt için özet fiş.`,
+    `${formatNumber(rows.length)} kayıt için dengeli özet fiş.`,
     `<div class="result-grid">
       <div><span>Kayıt</span><b>${formatNumber(rows.length)}</b></div>
-      <div><span>Toplam</span><b>${formatMoney(total)}</b></div>
-      <div><span>KDV</span><b>${formatMoney(vat)}</b></div>
-      <div><span>Net gider</span><b>${formatMoney(total - vat)}</b></div>
+      <div><span>Borç gider</span><b>${formatMoney(expense)}</b></div>
+      <div><span>Borç KDV</span><b>${formatMoney(vat)}</b></div>
+      <div><span>Alacak satıcı</span><b>${formatMoney(total)}</b></div>
     </div>`
   );
 }
@@ -1183,8 +1223,7 @@ async function loadDashboard() {
     window.location.href = "/login";
     return;
   }
-  if (!response.ok) throw new Error("Dashboard alınamadı");
-  state.payload = await response.json();
+  state.payload = await readJsonResponse(response, "Dashboard alınamadı");
   renderAll();
   setStatus("Hazır");
 }
@@ -1195,7 +1234,7 @@ async function loadCurrentUser() {
     window.location.href = "/login";
     return;
   }
-  const payload = await response.json();
+  const payload = await readJsonResponse(response, "Kullanıcı bilgisi alınamadı");
   const user = payload.user;
   document.querySelector("#userChip").textContent = `${user.full_name} · ${user.role}`;
 }
@@ -1260,8 +1299,7 @@ function wireUpload() {
       const formData = new FormData();
       formData.append("file", file);
       const response = await fetch("/api/import", { method: "POST", body: formData });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "Aktarım başarısız");
+      const payload = await readJsonResponse(response, "Aktarım başarısız");
       state.payload = payload.dashboard;
       state.selectedPayable = null;
       renderImportResult(payload.summary);

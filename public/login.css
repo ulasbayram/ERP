@@ -94,6 +94,14 @@ input {
   font-weight: 900;
 }
 
+.brand-logo {
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  display: block;
+  flex: 0 0 auto;
+}
+
 .brand-lock strong,
 .brand-lock span {
   display: block;
