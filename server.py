@@ -253,10 +253,27 @@ def init_db() -> None:
     UPLOADS.mkdir(parents=True, exist_ok=True)
     with connect() as conn:
         conn.executescript(SCHEMA.read_text(encoding="utf-8"))
+        ensure_schema_migrations(conn)
         conn.execute(
             "INSERT OR IGNORE INTO companies(name) VALUES (?)",
             ("Ulaş Bayram ERP",),
         )
+
+
+def ensure_schema_migrations(conn: sqlite3.Connection) -> None:
+    bank_columns = {row["name"] for row in conn.execute("PRAGMA table_info(bank_statement_lines)")}
+    bank_migrations = {
+        "match_status": "ALTER TABLE bank_statement_lines ADD COLUMN match_status TEXT NOT NULL DEFAULT 'unmatched'",
+        "match_type": "ALTER TABLE bank_statement_lines ADD COLUMN match_type TEXT",
+        "matched_partner_id": "ALTER TABLE bank_statement_lines ADD COLUMN matched_partner_id INTEGER",
+        "matched_invoice_id": "ALTER TABLE bank_statement_lines ADD COLUMN matched_invoice_id INTEGER",
+        "account_code": "ALTER TABLE bank_statement_lines ADD COLUMN account_code TEXT",
+        "match_note": "ALTER TABLE bank_statement_lines ADD COLUMN match_note TEXT",
+        "matched_at": "ALTER TABLE bank_statement_lines ADD COLUMN matched_at TEXT",
+    }
+    for column, statement in bank_migrations.items():
+        if column not in bank_columns:
+            conn.execute(statement)
 
 
 def header_map(ws) -> dict[str, int]:
@@ -635,6 +652,22 @@ def dashboard_payload() -> dict:
         missing_cost_category = scalar(
             "SELECT COUNT(*) FROM purchase_invoices WHERE cost_category IS NULL OR cost_category = ''"
         )
+        duplicate_employees = scalar(
+            """
+            SELECT COUNT(*)
+            FROM (
+              SELECT normalize_name, COUNT(*) AS count
+              FROM (
+                SELECT lower(trim(full_name)) AS normalize_name
+                FROM employees
+                WHERE full_name IS NOT NULL AND full_name <> ''
+              )
+              GROUP BY normalize_name
+              HAVING COUNT(*) > 1
+            )
+            """
+        )
+        unmatched_bank_lines = scalar("SELECT COUNT(*) FROM bank_statement_lines WHERE COALESCE(match_status, 'unmatched') <> 'matched'")
         pending_invoices = scalar("SELECT COUNT(*) FROM purchase_invoices WHERE remaining_amount > 0")
 
         latest_import = conn.execute(
@@ -659,9 +692,11 @@ def dashboard_payload() -> dict:
             dict(row)
             for row in conn.execute(
                 """
-                SELECT id, transaction_date, transaction_type, transaction_group, sub_category, net_amount
+                SELECT id, transaction_date, transaction_type, transaction_group, sub_category, net_amount,
+                       COALESCE(match_status, 'unmatched') AS match_status, match_type, account_code, match_note
                 FROM bank_statement_lines
-                ORDER BY transaction_date DESC
+                ORDER BY CASE WHEN COALESCE(match_status, 'unmatched') = 'matched' THEN 1 ELSE 0 END,
+                         transaction_date DESC
                 """
             )
         ]
@@ -804,6 +839,8 @@ def dashboard_payload() -> dict:
                 "duplicateInvoices": duplicate_invoices,
                 "missingDueDates": missing_due_dates,
                 "missingCostCategory": missing_cost_category,
+                "duplicateEmployees": duplicate_employees,
+                "unmatchedBankLines": unmatched_bank_lines,
             },
             "workQueue": [
                 {
@@ -815,7 +852,7 @@ def dashboard_payload() -> dict:
                 },
                 {
                     "label": "Mutabakat bekleyen banka satırları",
-                    "count": scalar("SELECT COUNT(*) FROM bank_statement_lines"),
+                    "count": unmatched_bank_lines,
                     "amount": bank_net,
                     "severity": "normal",
                     "target": "bank",
@@ -859,6 +896,12 @@ def dashboard_payload() -> dict:
                     "count": scalar("SELECT COUNT(*) FROM employees WHERE monthly_salary IS NULL OR monthly_salary = 0"),
                     "owner": "Muhasebe",
                     "action": "Personel maaş kartlarını tamamla; avans düşümü ödenecek maaşa otomatik yansır.",
+                },
+                {
+                    "name": "Tekrarlı personel kartı",
+                    "count": duplicate_employees,
+                    "owner": "Muhasebe",
+                    "action": "Aynı personelin iki kez maaş/avans takibine girmediğini doğrula.",
                 },
             ],
             "latestImport": dict(latest_import) if latest_import else None,
@@ -1140,6 +1183,13 @@ class ERPHandler(SimpleHTTPRequestHandler):
                     self.send_json({"error": "Maaş, avans ve gün negatif olamaz."}, 400)
                     return
                 with connect() as conn:
+                    duplicate = conn.execute(
+                        "SELECT id FROM employees WHERE lower(trim(full_name)) = lower(trim(?)) LIMIT 1",
+                        (full_name,),
+                    ).fetchone()
+                    if duplicate:
+                        self.send_json({"error": "Bu ad soyadla kayıtlı personel var. Mevcut kartı kontrol et."}, 409)
+                        return
                     site_id = get_or_create_site(conn, payload.get("projectSite"))
                     cur = conn.execute(
                         """
@@ -1194,6 +1244,9 @@ class ERPHandler(SimpleHTTPRequestHandler):
                 remaining_amount = max(gross_total - paid_amount, 0)
                 payment_status = "paid" if remaining_amount == 0 else ("partial" if paid_amount > 0 else "pending")
                 due_date = normalize_text(payload.get("dueDate")) or None
+                if remaining_amount > 0 and not due_date:
+                    self.send_json({"error": "Açık fatura için vade tarihi zorunlu."}, 400)
+                    return
                 if due_date and remaining_amount > 0:
                     try:
                         if datetime.fromisoformat(due_date[:10]).date() < date.today():
@@ -1281,6 +1334,81 @@ class ERPHandler(SimpleHTTPRequestHandler):
                 self.send_json({"error": "Geçersiz JSON."}, 400)
             except Exception as exc:
                 self.send_json({"error": f"Faturalar güncellenemedi: {exc}"}, 500)
+            return
+
+        if parsed.path == "/api/bank/match":
+            try:
+                payload = read_json_body(self)
+                line_id = int(payload.get("lineId", 0))
+                match_type = normalize_text(payload.get("matchType")) or "expense"
+                account_code = normalize_text(payload.get("accountCode"))
+                match_note = normalize_text(payload.get("matchNote"))
+                partner_id = int(to_float(payload.get("partnerId"))) if payload.get("partnerId") else None
+                invoice_id = int(to_float(payload.get("invoiceId"))) if payload.get("invoiceId") else None
+                if line_id <= 0:
+                    self.send_json({"error": "Geçerli banka satırı seçilmedi."}, 400)
+                    return
+                if match_type not in {"invoice", "partner", "expense", "transfer", "payroll"}:
+                    self.send_json({"error": "Geçerli eşleştirme türü seç."}, 400)
+                    return
+                if match_type == "invoice" and not invoice_id:
+                    self.send_json({"error": "Fatura eşleştirmesi için fatura seç."}, 400)
+                    return
+                if match_type in {"expense", "transfer", "payroll"} and not account_code:
+                    self.send_json({"error": "Hesap kodu zorunlu."}, 400)
+                    return
+                with connect() as conn:
+                    before = conn.execute("SELECT * FROM bank_statement_lines WHERE id = ?", (line_id,)).fetchone()
+                    if not before:
+                        self.send_json({"error": "Banka satırı bulunamadı."}, 404)
+                        return
+                    if partner_id:
+                        if not conn.execute("SELECT id FROM business_partners WHERE id = ?", (partner_id,)).fetchone():
+                            self.send_json({"error": "Cari bulunamadı."}, 404)
+                            return
+                    if invoice_id:
+                        if not conn.execute("SELECT id FROM purchase_invoices WHERE id = ?", (invoice_id,)).fetchone():
+                            self.send_json({"error": "Fatura bulunamadı."}, 404)
+                            return
+                    conn.execute(
+                        """
+                        UPDATE bank_statement_lines
+                        SET match_status = 'matched',
+                            match_type = ?,
+                            matched_partner_id = ?,
+                            matched_invoice_id = ?,
+                            account_code = ?,
+                            match_note = ?,
+                            matched_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        """,
+                        (match_type, partner_id, invoice_id, account_code, match_note, line_id),
+                    )
+                    conn.execute(
+                        "INSERT INTO audit_events(actor, action, entity_name, entity_id, old_value, new_value) VALUES (?, ?, ?, ?, ?, ?)",
+                        (
+                            user["email"],
+                            "match_bank_line",
+                            "bank_statement_lines",
+                            str(line_id),
+                            json.dumps(dict(before), ensure_ascii=False),
+                            json.dumps(
+                                {
+                                    "match_type": match_type,
+                                    "partner_id": partner_id,
+                                    "invoice_id": invoice_id,
+                                    "account_code": account_code,
+                                    "match_note": match_note,
+                                },
+                                ensure_ascii=False,
+                            ),
+                        ),
+                    )
+                self.send_json({"dashboard": dashboard_payload()})
+            except json.JSONDecodeError:
+                self.send_json({"error": "Geçersiz JSON."}, 400)
+            except Exception as exc:
+                self.send_json({"error": f"Banka satırı eşleştirilemedi: {exc}"}, 500)
             return
 
         if parsed.path == "/api/employees/bulk-site":

@@ -45,6 +45,18 @@ function statusLabel(value) {
   return labels[value] || value || "-";
 }
 
+function partnerTypeLabel(value) {
+  const labels = {
+    vendor: "Tedarikçi",
+    customer: "Müşteri",
+  };
+  return labels[value] || value || "-";
+}
+
+function bankMatchLabel(value) {
+  return value === "matched" ? "Mutabık" : "Bekliyor";
+}
+
 function toTurkishTitle(value) {
   const letters = {
     i: "İ",
@@ -183,7 +195,16 @@ function renderKpis(kpis = {}) {
     ["Banka net", formatMoney(kpis.bankNet), `${formatNumber(kpis.bankLineCount)} ekstre satırı`],
     ["Çek / senet", formatMoney(kpis.paymentInstrumentTotal), `${formatNumber(kpis.paymentInstrumentCount)} portföy kaydı`],
     ["Personel", formatNumber(kpis.employeeCount), "KVKK maskeli ana veri"],
-    ["Veri uyarısı", formatNumber((kpis.duplicateInvoices || 0) + (kpis.missingDueDates || 0) + (kpis.missingCostCategory || 0)), "Kapanış öncesi kontrol"],
+    [
+      "Veri uyarısı",
+      formatNumber(
+        (kpis.duplicateInvoices || 0) +
+          (kpis.missingDueDates || 0) +
+          (kpis.missingCostCategory || 0) +
+          (kpis.duplicateEmployees || 0)
+      ),
+      "Kapanış öncesi kontrol",
+    ],
   ];
 
   document.querySelector("#kpiStrip").innerHTML = items
@@ -318,12 +339,13 @@ function renderBank(rows = []) {
               <td>${escapeHtml(row.transaction_type || "-")}</td>
               <td>${escapeHtml(row.transaction_group || "-")} / ${escapeHtml(row.sub_category || "-")}</td>
               <td class="amount">${formatMoney(row.net_amount)}</td>
+              <td><span class="badge ${row.match_status === "matched" ? "paid" : "pending"}">${bankMatchLabel(row.match_status)}</span></td>
               <td><button class="ghost" data-bank-match="${row.id}">Eşleştir</button></td>
             </tr>
           `
         )
         .join("")
-    : `<tr>${selectColumnEmpty()}<td colspan="5">Kayıt bulunamadı.</td></tr>`;
+    : `<tr>${selectColumnEmpty()}<td colspan="6">Kayıt bulunamadı.</td></tr>`;
 
   document.querySelectorAll("[data-bank-match]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -379,7 +401,7 @@ function renderPartners(rows = []) {
         <tr>
           ${checkboxCell("partners", row.id)}
           <td>${escapeHtml(row.name)}</td>
-          <td>${escapeHtml(row.partner_type)}</td>
+          <td>${escapeHtml(partnerTypeLabel(row.partner_type))}</td>
           <td class="amount">${formatNumber(row.invoice_count)}</td>
           <td class="amount">${formatMoney(row.gross_total)}</td>
           <td class="amount">${formatMoney(row.open_balance)}</td>
@@ -663,7 +685,7 @@ function recordFields(type) {
     <label>Cari<input name="partnerName" required /></label>
     <label>Fatura no<input name="invoiceNo" /></label>
     <label>Fatura tarihi<input name="invoiceDate" type="date" /></label>
-    <label>Vade tarihi<input name="dueDate" type="date" /></label>
+    <label>Vade tarihi<input name="dueDate" type="date" required /></label>
     <label>Şantiye / maliyet merkezi<input name="projectSite" /></label>
     <label>Gider kategorisi<input name="costCategory" /></label>
     <label>KDV oranı<input name="vatRate" type="number" min="0" step="0.01" value="20" /></label>
@@ -830,20 +852,98 @@ function openVoucherPreview(row) {
         <article class="compact-item"><div><b>Borç · 191 İndirilecek KDV</b><span>${escapeHtml(row.partner || "-")}</span></div><strong>${formatMoney(vatAmount)}</strong></article>
         <article class="compact-item"><div><b>Alacak · 320 Satıcılar</b><span>${escapeHtml(row.partner || "-")}</span></div><strong>${formatMoney(grossTotal)}</strong></article>
       </div>
+      <footer class="modal-actions">
+        <button type="button" class="ghost" id="printVoucherButton">Yazdır</button>
+        <button type="button" class="primary" id="closeVoucherButton">Tamam</button>
+      </footer>
     `
   );
+  document.querySelector("#printVoucherButton")?.addEventListener("click", () => window.print());
+  document.querySelector("#closeVoucherButton")?.addEventListener("click", closeActionModal);
 }
 
 function openBankMatch(row) {
   if (!row) return;
+  const partners = state.payload?.partners || [];
+  const invoices = (state.payload?.payables || []).filter((item) => Number(item.remaining_amount || 0) > 0);
   openActionModal(
     "Banka eşleştirme",
-    "Ekstre satırı için önerilen muhasebe aksiyonu.",
-    `<div class="compact-list">
-      <article class="compact-item"><div><b>${escapeHtml(row.transaction_type || "Ekstre")}</b><span>${escapeHtml(row.transaction_group || "-")}</span></div><strong>${formatMoney(row.net_amount)}</strong></article>
-      <article class="compact-item"><div><b>Öneri</b><span>Cari/fatura veya masraf hesabı ile eşleştir</span></div><strong>Hazır</strong></article>
-    </div>`
+    "Ekstre satırı için kalıcı mutabakat kaydı oluştur.",
+    `
+      <form id="bankMatchForm" class="record-form">
+        <input type="hidden" name="lineId" value="${escapeHtml(row.id)}" />
+        <div class="compact-list">
+          <article class="compact-item"><div><b>${escapeHtml(row.transaction_type || "Ekstre")}</b><span>${escapeHtml(row.transaction_group || "-")}</span></div><strong>${formatMoney(row.net_amount)}</strong></article>
+        </div>
+        <div class="record-grid">
+          <label>İşlem türü
+            <select name="matchType" id="bankMatchType">
+              <option value="expense">Masraf</option>
+              <option value="invoice">Fatura</option>
+              <option value="partner">Cari hareket</option>
+              <option value="transfer">Virman</option>
+              <option value="payroll">Personel / maaş</option>
+            </select>
+          </label>
+          <label>Hesap kodu<input name="accountCode" value="${escapeHtml(row.account_code || suggestedAccountCode(row))}" /></label>
+          <label>Cari
+            <select name="partnerId">
+              <option value="">Seçilmedi</option>
+              ${partners.map((partner) => `<option value="${partner.id}">${escapeHtml(partner.name)}</option>`).join("")}
+            </select>
+          </label>
+          <label>Fatura
+            <select name="invoiceId">
+              <option value="">Seçilmedi</option>
+              ${invoices.map((invoice) => `<option value="${invoice.id}">${escapeHtml(invoice.invoice_no || "-")} · ${escapeHtml(invoice.partner || "-")} · ${formatMoney(invoice.remaining_amount)}</option>`).join("")}
+            </select>
+          </label>
+        </div>
+        <label>Not<input name="matchNote" value="${escapeHtml(row.match_note || "")}" placeholder="Eşleştirme açıklaması" /></label>
+        <footer class="modal-actions">
+          <button type="button" class="ghost" id="cancelActionModal">Vazgeç</button>
+          <button type="submit" class="primary">Mutabıklaştır</button>
+        </footer>
+      </form>
+    `
   );
+  document.querySelector("#cancelActionModal").addEventListener("click", closeActionModal);
+  document.querySelector("#bankMatchForm").addEventListener("submit", saveBankMatch);
+}
+
+function suggestedAccountCode(row) {
+  const text = `${row.transaction_group || ""} ${row.sub_category || ""} ${row.transaction_type || ""}`.toLocaleLowerCase("tr-TR");
+  if (text.includes("personel") || text.includes("maaş") || text.includes("avans")) return "335";
+  if (text.includes("vergi")) return "360";
+  if (text.includes("virman") || text.includes("hesaplar arası")) return "102";
+  if (Number(row.net_amount || 0) > 0) return "120";
+  return "770";
+}
+
+async function saveBankMatch(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const button = form.querySelector("button[type='submit']");
+  const payload = Object.fromEntries(new FormData(form).entries());
+  button.disabled = true;
+  button.textContent = "Kaydediliyor";
+  try {
+    const response = await fetch("/api/bank/match", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const result = await readJsonResponse(response, "Banka satırı eşleştirilemedi");
+    state.payload = result.dashboard;
+    renderAll();
+    closeActionModal();
+    showToast("Banka satırı mutabıklaştırıldı");
+  } catch (error) {
+    showToast(error.message, false);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Mutabıklaştır";
+  }
 }
 
 function focusImport() {

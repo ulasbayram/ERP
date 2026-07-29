@@ -78,7 +78,16 @@ CREATE TABLE IF NOT EXISTS bank_statement_lines (
   credit_amount REAL NOT NULL DEFAULT 0,
   balance_amount REAL,
   direction TEXT,
-  net_amount REAL NOT NULL DEFAULT 0
+  net_amount REAL NOT NULL DEFAULT 0,
+  match_status TEXT NOT NULL DEFAULT 'unmatched',
+  match_type TEXT,
+  matched_partner_id INTEGER,
+  matched_invoice_id INTEGER,
+  account_code TEXT,
+  match_note TEXT,
+  matched_at TEXT,
+  FOREIGN KEY (matched_partner_id) REFERENCES business_partners(id),
+  FOREIGN KEY (matched_invoice_id) REFERENCES purchase_invoices(id)
 );
 
 CREATE TABLE IF NOT EXISTS purchase_invoices (

@@ -761,6 +761,36 @@ tbody tr:hover {
   background: #fff3ea;
 }
 
+@media print {
+  body * {
+    visibility: hidden;
+  }
+
+  #actionModal:not([hidden]),
+  #actionModal:not([hidden]) * {
+    visibility: visible;
+  }
+
+  #actionModal:not([hidden]) {
+    position: fixed;
+    inset: 0;
+    display: block;
+    background: #fff;
+    padding: 0;
+  }
+
+  #actionModal:not([hidden]) .modal {
+    width: 100%;
+    border: 0;
+    box-shadow: none;
+  }
+
+  #actionModal:not([hidden]) .icon-button,
+  #actionModal:not([hidden]) .modal-actions {
+    display: none;
+  }
+}
+
 @media (max-width: 1150px) {
   .shell,
   .layout-2,
