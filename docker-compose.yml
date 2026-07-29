@@ -1,0 +1,21 @@
+services:
+  erp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - HOST=${HOST:-0.0.0.0}
+      - ERP_PORT=${ERP_PORT:-8088}
+      - ERP_COOKIE_SECURE=${ERP_COOKIE_SECURE:-true}
+      - ERP_SESSION_DAYS=${ERP_SESSION_DAYS:-7}
+      - ERP_INVITE_CODE=${ERP_INVITE_CODE:?set-a-long-random-invite-code}
+      - ERP_ALLOW_OPEN_REGISTRATION=${ERP_ALLOW_OPEN_REGISTRATION:-false}
+      - ERP_MAX_UPLOAD_BYTES=${ERP_MAX_UPLOAD_BYTES:-10485760}
+    expose:
+      - "8088"
+    volumes:
+      - erp_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  erp_data:

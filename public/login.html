@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AKIM ERP Giriş</title>
+    <link rel="stylesheet" href="/login.css" />
+  </head>
+  <body>
+    <main class="login-shell">
+      <section class="info-grid left" aria-label="ERP özellikleri">
+        <article><span>01</span><b>Fatura Kontrolü</b><p>Açık bakiye, vade ve mükerrer belge uyarıları.</p></article>
+        <article><span>02</span><b>Banka Mutabakatı</b><p>Ekstre satırlarını cari, fatura ve personel ödemesiyle eşleştir.</p></article>
+        <article><span>03</span><b>Maaş / Avans</b><p>Avans girişleri ödenecek maaştan otomatik düşer.</p></article>
+      </section>
+
+      <section class="auth-card">
+        <div class="brand-lock">
+          <div class="mark">A</div>
+          <div>
+            <strong>AKIM ERP</strong>
+            <span>Muhasebe operasyon paneli</span>
+          </div>
+        </div>
+
+        <div class="tabs">
+          <button class="tab active" data-mode="login">Giriş</button>
+          <button class="tab" data-mode="register">Kayıt</button>
+        </div>
+
+        <form id="loginForm" class="auth-form active">
+          <label>
+            E-posta
+            <input id="loginEmail" type="email" autocomplete="email" required />
+          </label>
+          <label>
+            Parola
+            <input id="loginPassword" type="password" autocomplete="current-password" required />
+          </label>
+          <button type="submit">Giriş Yap</button>
+        </form>
+
+        <form id="registerForm" class="auth-form">
+          <label>
+            Ad Soyad
+            <input id="registerName" type="text" autocomplete="name" required />
+          </label>
+          <label>
+            E-posta
+            <input id="registerEmail" type="email" autocomplete="email" required />
+          </label>
+          <label>
+            Parola
+            <input id="registerPassword" type="password" autocomplete="new-password" minlength="10" required />
+          </label>
+          <label id="inviteWrap">
+            Davet Kodu
+            <input id="inviteCode" type="password" autocomplete="off" />
+          </label>
+          <button type="submit">Hesap Oluştur</button>
+        </form>
+
+        <p id="authMessage" class="message"></p>
+      </section>
+
+      <section class="info-grid right" aria-label="Güvenlik özellikleri">
+        <article><span>04</span><b>Rol Bazlı Kullanım</b><p>İlk kullanıcı admin, sonraki kullanıcılar davet koduyla açılır.</p></article>
+        <article><span>05</span><b>Güvenli Oturum</b><p>HttpOnly session cookie ve PBKDF2 parola saklama.</p></article>
+        <article><span>06</span><b>Import Center</b><p>Excel ilk veri kaynağıdır; kayıtlar sonradan ERP içinde düzenlenir.</p></article>
+      </section>
+    </main>
+    <script src="/login.js"></script>
+  </body>
+</html>

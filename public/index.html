@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AKIM ERP</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="rail">
+        <div class="brand">
+          <span class="brand-icon">A</span>
+          <div>
+            <strong>AKIM ERP</strong>
+            <small>Finance Operations</small>
+          </div>
+        </div>
+
+        <div class="nav-group">
+          <span>Çalışma Alanı</span>
+          <button class="nav-item active" data-tab="home">Muhasebe Paneli</button>
+          <button class="nav-item" data-tab="ap">Alış Faturaları</button>
+          <button class="nav-item" data-tab="bank">Banka Mutabakatı</button>
+          <button class="nav-item" data-tab="payments">Ödeme ve Çek/Senet</button>
+        </div>
+
+        <div class="nav-group">
+          <span>Kartlar</span>
+          <button class="nav-item" data-tab="partners">Cariler</button>
+          <button class="nav-item" data-tab="employees">Maaş / Avans</button>
+          <button class="nav-item" data-tab="tax">KDV / Tevkifat</button>
+          <button class="nav-item" data-tab="controls">Kontroller</button>
+        </div>
+
+        <div class="nav-group">
+          <span>Sistem</span>
+          <button class="nav-item" data-tab="import">Import Center</button>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="appbar">
+          <div class="context">
+            <label>
+              Şirket
+              <select>
+                <option>AKIM Yapı Adi Ortaklığı</option>
+              </select>
+            </label>
+            <label>
+              Dönem
+              <select>
+                <option>2026 / Temmuz</option>
+                <option>2026 / Haziran</option>
+                <option>2026 / Mayıs</option>
+              </select>
+            </label>
+            <label class="search">
+              Ara
+              <input id="globalSearch" type="search" placeholder="Fatura no, cari, açıklama" />
+            </label>
+          </div>
+          <div class="app-actions">
+            <button class="ghost">Simüle Et</button>
+            <button class="ghost">Doğrula</button>
+            <button class="primary">Yeni Kayıt</button>
+            <span class="user-chip" id="userChip"></span>
+            <button class="ghost" id="logoutButton">Çıkış</button>
+            <span class="server-state" id="serverStatus">Bağlanıyor</span>
+          </div>
+        </header>
+
+        <section id="home" class="view active">
+          <div class="page-head">
+            <div>
+              <h1>Muhasebe Paneli</h1>
+              <p>İş kuyrukları, dönem kapanış kontrolleri ve nakit görünümü.</p>
+            </div>
+            <div class="period-lock">Dönem açık</div>
+          </div>
+
+          <div class="kpi-strip" id="kpiStrip"></div>
+
+          <div class="layout-2">
+            <section class="block">
+              <div class="block-head">
+                <h2>İş Kuyruğu</h2>
+                <button class="text-button">Tümünü sırala</button>
+              </div>
+              <div class="queue" id="workQueue"></div>
+            </section>
+
+            <section class="block">
+              <div class="block-head">
+                <h2>Banka Grupları</h2>
+                <button class="text-button">Kuralları aç</button>
+              </div>
+              <div id="bankGroups" class="compact-list"></div>
+            </section>
+          </div>
+
+          <section class="block">
+            <div class="block-head">
+              <h2>Dönem Kapanış Kontrolleri</h2>
+              <button class="text-button">Kural seti</button>
+            </div>
+            <div id="controlPreview" class="control-grid"></div>
+          </section>
+        </section>
+
+        <section id="ap" class="view">
+          <div class="page-head">
+            <div>
+              <h1>Alış Faturaları</h1>
+              <p>Fatura girişi, ödeme durumu, KDV ve cari borç takibi.</p>
+            </div>
+            <button class="primary">Fatura Gir</button>
+          </div>
+          <div class="filterbar">
+            <input data-filter="ap" type="search" placeholder="Cari veya fatura no" />
+            <select><option>Durum: Tümü</option><option>Açık</option><option>Ödendi</option></select>
+            <select><option>Maliyet Merkezi: Tümü</option></select>
+            <button class="ghost">Filtreyi Kaydet</button>
+            <button class="ghost">Excel Dışa Aktar</button>
+          </div>
+          <div class="split">
+            <div class="table-card">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Fatura Tarihi</th>
+                    <th>Belge No</th>
+                    <th>Cari</th>
+                    <th>Maliyet Merkezi</th>
+                    <th>Genel Toplam</th>
+                    <th>Kalan</th>
+                    <th>Durum</th>
+                  </tr>
+                </thead>
+                <tbody id="payableRows"></tbody>
+              </table>
+            </div>
+            <aside class="inspector" id="apInspector"></aside>
+          </div>
+        </section>
+
+        <section id="bank" class="view">
+          <div class="page-head">
+            <div>
+              <h1>Banka Mutabakatı</h1>
+              <p>Ekstre satırını cari, fatura, personel ödemesi veya gider hesabı ile eşleştir.</p>
+            </div>
+            <button class="primary">Ekstre Yükle</button>
+          </div>
+          <div class="reconcile-layout">
+            <section class="block">
+              <div class="block-head">
+                <h2>Ekstre Satırları</h2>
+                <button class="text-button">Eşleşenleri gizle</button>
+              </div>
+              <div class="table-card flat">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Tarih</th>
+                      <th>Açıklama</th>
+                      <th>Grup</th>
+                      <th>Net</th>
+                      <th>Aksiyon</th>
+                    </tr>
+                  </thead>
+                  <tbody id="bankRows"></tbody>
+                </table>
+              </div>
+            </section>
+            <aside class="match-panel">
+              <h2>Eşleştirme</h2>
+              <div class="match-box">
+                <span>Önerilen hesap</span>
+                <b>320 Satıcılar / 195 İş Avansları</b>
+              </div>
+              <button class="primary wide">Mutabıklaştır</button>
+              <button class="ghost wide">Farkı masraf yaz</button>
+              <button class="ghost wide">Kural olarak kaydet</button>
+            </aside>
+          </div>
+        </section>
+
+        <section id="payments" class="view">
+          <div class="page-head">
+            <div>
+              <h1>Ödeme ve Çek/Senet</h1>
+              <p>Vade kuyruğu, çek/senet portföyü ve ödeme hazırlığı.</p>
+            </div>
+            <button class="primary">Ödeme Run Oluştur</button>
+          </div>
+          <div class="layout-2">
+            <section class="block">
+              <div class="block-head"><h2>Açık Faturalar</h2><button class="text-button">Vade sırası</button></div>
+              <div class="table-card flat">
+                <table>
+                  <thead><tr><th>Vade</th><th>Cari</th><th>Fatura</th><th>Kalan</th></tr></thead>
+                  <tbody id="paymentInvoiceRows"></tbody>
+                </table>
+              </div>
+            </section>
+            <section class="block">
+              <div class="block-head"><h2>Çek / Senet Portföyü</h2><button class="text-button">Portföy durumu</button></div>
+              <div class="table-card flat">
+                <table>
+                  <thead><tr><th>Vade</th><th>Cari</th><th>No</th><th>Tutar</th></tr></thead>
+                  <tbody id="instrumentRows"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="partners" class="view">
+          <div class="page-head">
+            <div>
+              <h1>Cariler</h1>
+              <p>Tedarikçi/müşteri kartları, açık bakiye ve hareket özeti.</p>
+            </div>
+            <button class="primary">Cari Aç</button>
+          </div>
+          <div class="table-card">
+            <table>
+              <thead><tr><th>Cari</th><th>Tip</th><th>Fatura</th><th>Toplam</th><th>Açık Bakiye</th></tr></thead>
+              <tbody id="partnerRows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="employees" class="view">
+          <div class="page-head">
+            <div>
+              <h1>Personel</h1>
+              <p>Kıdem, aylık maaş, avans ve ödenecek maaş takibi.</p>
+            </div>
+            <button class="primary">Personel Kartı Aç</button>
+          </div>
+          <div class="table-card">
+            <table>
+              <thead>
+                <tr>
+                  <th>Ad Soyad</th>
+                  <th>İşe Giriş</th>
+                  <th>Kıdem</th>
+                  <th>Şantiye</th>
+                  <th>Çalıştığı Gün</th>
+                  <th>Aylık Maaş</th>
+                  <th>Avans</th>
+                  <th>Ödenecek Maaş</th>
+                  <th>Durum</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="employeeRows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="tax" class="view">
+          <div class="page-head">
+            <div>
+              <h1>KDV / Tevkifat</h1>
+              <p>Dönem bazlı matrah, KDV, tevkifat ve net vergi pozisyonu.</p>
+            </div>
+            <button class="primary">Beyan Kontrolü</button>
+          </div>
+          <div class="table-card">
+            <table>
+              <thead><tr><th>Dönem</th><th>Alış Matrah</th><th>Alış KDV</th><th>Satış Matrah</th><th>Tevkifat</th><th>Net KDV</th></tr></thead>
+              <tbody id="vatRows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="controls" class="view">
+          <div class="page-head">
+            <div>
+              <h1>Kontroller</h1>
+              <p>Canlı kullanım öncesi bloklayıcı veri ve süreç kontrolleri.</p>
+            </div>
+            <button class="primary">Kontrol Çalıştır</button>
+          </div>
+          <div id="controlRows" class="control-list"></div>
+        </section>
+
+        <section id="import" class="view">
+          <div class="page-head">
+            <div>
+              <h1>Import Center</h1>
+              <p>Excel dosyasını staging alanına al, doğrula, sonra operasyon tablolarına işle.</p>
+            </div>
+            <button class="ghost">Şablon İndir</button>
+          </div>
+          <form class="import-panel" id="uploadForm">
+            <label>
+              Dosya
+              <input id="fileInput" type="file" name="file" accept=".xlsx,.xlsm" />
+            </label>
+            <label>
+              Import profili
+              <select>
+                <option>Finans_Maliyet_Personel v1</option>
+              </select>
+            </label>
+            <label>
+              Yükleme modu
+              <select>
+                <option>Staging + doğrulama + aktarım</option>
+                <option>Sadece staging</option>
+              </select>
+            </label>
+            <button type="submit" class="primary">Aktarımı Başlat</button>
+          </form>
+          <div class="import-result" id="importResult">Aktarım sonucu bekleniyor.</div>
+          <section class="block">
+            <div class="block-head"><h2>Son Import Özeti</h2><span id="lastImportTime">Henüz yok</span></div>
+            <pre id="lastImportLog" class="log"></pre>
+          </section>
+        </section>
+      </main>
+    </div>
+    <div class="modal-backdrop" id="advanceModal" hidden>
+      <section class="modal" role="dialog" aria-modal="true" aria-labelledby="advanceModalTitle">
+        <header class="modal-head">
+          <div>
+            <h2 id="advanceModalTitle">Avans Girişi</h2>
+            <p id="advanceEmployeeName">Personel seçilmedi</p>
+          </div>
+          <button type="button" class="icon-button" id="closeAdvanceModal" aria-label="Kapat">×</button>
+        </header>
+        <form id="advanceForm" class="modal-body">
+          <input type="hidden" id="advanceEmployeeId" />
+          <label>
+            Aylık Maaş
+            <input id="advanceMonthlySalary" type="number" min="0" step="0.01" inputmode="decimal" />
+          </label>
+          <label>
+            Bu Ay Alınan Avans
+            <input id="advanceAmount" type="number" min="0" step="0.01" inputmode="decimal" />
+          </label>
+          <div class="calculation-row">
+            <span>Ödenecek Maaş</span>
+            <strong id="advancePaidSalary">₺0</strong>
+          </div>
+          <footer class="modal-actions">
+            <button type="button" class="ghost" id="cancelAdvanceModal">Vazgeç</button>
+            <button type="submit" class="primary">Kaydet</button>
+          </footer>
+        </form>
+      </section>
+    </div>
+    <div class="modal-backdrop" id="siteModal" hidden>
+      <section class="modal" role="dialog" aria-modal="true" aria-labelledby="siteModalTitle">
+        <header class="modal-head">
+          <div>
+            <h2 id="siteModalTitle">Şantiye Ataması</h2>
+            <p id="siteEmployeeName">Personel seçilmedi</p>
+          </div>
+          <button type="button" class="icon-button" id="closeSiteModal" aria-label="Kapat">×</button>
+        </header>
+        <form id="siteForm" class="modal-body">
+          <input type="hidden" id="siteEmployeeId" />
+          <label>
+            Mevcut Şantiye
+            <select id="siteSelect"></select>
+          </label>
+          <label>
+            Yeni Şantiye
+            <input id="siteName" type="text" placeholder="Yeni şantiye adı" />
+          </label>
+          <footer class="modal-actions">
+            <button type="button" class="ghost" id="cancelSiteModal">Vazgeç</button>
+            <button type="submit" class="primary">Kaydet</button>
+          </footer>
+        </form>
+      </section>
+    </div>
+    <script src="/app.js"></script>
+  </body>
+</html>

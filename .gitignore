@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.env
+data/erp.sqlite3
+data/uploads/
+data/samples/
+data/backups/
+.docker-tmp/
