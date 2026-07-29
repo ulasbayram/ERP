@@ -1096,7 +1096,8 @@ class ERPHandler(SimpleHTTPRequestHandler):
             self.wfile.write(body)
             return
 
-        if parsed.path.startswith("/api/") and not self.current_user():
+        user = self.current_user() if parsed.path.startswith("/api/") else None
+        if parsed.path.startswith("/api/") and not user:
             self.send_json({"error": "Oturum gerekli."}, 401)
             return
 
@@ -1113,7 +1114,7 @@ class ERPHandler(SimpleHTTPRequestHandler):
                     conn.execute(
                         "INSERT INTO audit_events(actor, action, entity_name, entity_id, new_value) VALUES (?, ?, ?, ?, ?)",
                         (
-                            self.current_user()["email"],
+                            user["email"],
                             "create_partner",
                             "business_partners",
                             str(partner_id),
@@ -1168,7 +1169,7 @@ class ERPHandler(SimpleHTTPRequestHandler):
                     conn.execute(
                         "INSERT INTO audit_events(actor, action, entity_name, entity_id, new_value) VALUES (?, ?, ?, ?, ?)",
                         (
-                            self.current_user()["email"],
+                            user["email"],
                             "create_employee",
                             "employees",
                             str(cur.lastrowid),
@@ -1238,7 +1239,7 @@ class ERPHandler(SimpleHTTPRequestHandler):
                     conn.execute(
                         "INSERT INTO audit_events(actor, action, entity_name, entity_id, new_value) VALUES (?, ?, ?, ?, ?)",
                         (
-                            self.current_user()["email"],
+                            user["email"],
                             "create_purchase_invoice",
                             "purchase_invoices",
                             str(cur.lastrowid),
@@ -1274,7 +1275,7 @@ class ERPHandler(SimpleHTTPRequestHandler):
                     conn.execute(
                         "INSERT INTO audit_events(actor, action, entity_name, new_value) VALUES (?, ?, ?, ?)",
                         (
-                            self.current_user()["email"],
+                            user["email"],
                             "bulk_mark_paid",
                             "purchase_invoices",
                             json.dumps({"ids": ids}, ensure_ascii=False),
@@ -1305,7 +1306,7 @@ class ERPHandler(SimpleHTTPRequestHandler):
                     conn.execute(
                         "INSERT INTO audit_events(actor, action, entity_name, new_value) VALUES (?, ?, ?, ?)",
                         (
-                            self.current_user()["email"],
+                            user["email"],
                             "bulk_update_employee_site",
                             "employees",
                             json.dumps({"ids": ids, "project_site": site_name}, ensure_ascii=False),
@@ -1338,7 +1339,7 @@ class ERPHandler(SimpleHTTPRequestHandler):
                     conn.execute(
                         "INSERT INTO audit_events(actor, action, entity_name, new_value) VALUES (?, ?, ?, ?)",
                         (
-                            self.current_user()["email"],
+                            user["email"],
                             "bulk_update_employee_advance",
                             "employees",
                             json.dumps({"ids": ids, "advance_amount": advance_amount}, ensure_ascii=False),
