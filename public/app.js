@@ -169,6 +169,13 @@ function includesQuery(row) {
   return JSON.stringify(row).toLocaleLowerCase("tr-TR").includes(state.query);
 }
 
+function setGlobalQuery(value) {
+  const clean = String(value || "").trim();
+  state.query = clean.toLocaleLowerCase("tr-TR");
+  const global = document.querySelector("#globalSearch");
+  if (global) global.value = clean;
+}
+
 function renderKpis(kpis = {}) {
   const items = [
     ["Açık fatura", formatNumber(kpis.pendingInvoices), formatMoney(kpis.invoiceRemaining)],
@@ -722,6 +729,16 @@ async function saveNewRecord(event) {
     const result = await readJsonResponse(response, "Kayıt kaydedilemedi");
     state.payload = result.dashboard;
     state.selectedPayable = null;
+    if (type === "employee") {
+      activateTab("employees");
+      setGlobalQuery(payload.fullName);
+    } else if (type === "partner") {
+      activateTab("partners");
+      setGlobalQuery(payload.name);
+    } else {
+      activateTab("ap");
+      setGlobalQuery(payload.invoiceNo || payload.partnerName);
+    }
     renderAll();
     closeActionModal();
     showToast("Kayıt kaydedildi");

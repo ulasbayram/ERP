@@ -662,7 +662,6 @@ def dashboard_payload() -> dict:
                 SELECT id, transaction_date, transaction_type, transaction_group, sub_category, net_amount
                 FROM bank_statement_lines
                 ORDER BY transaction_date DESC
-                LIMIT 8
                 """
             )
         ]
@@ -679,7 +678,6 @@ def dashboard_payload() -> dict:
                 LEFT JOIN business_partners b ON b.id = p.partner_id
                 LEFT JOIN project_sites s ON s.id = p.project_site_id
                 ORDER BY p.remaining_amount DESC, p.invoice_date DESC
-                LIMIT 40
                 """
             )
         ]
@@ -696,7 +694,6 @@ def dashboard_payload() -> dict:
                 LEFT JOIN purchase_invoices p ON p.partner_id = b.id
                 GROUP BY b.id
                 ORDER BY open_balance DESC, gross_total DESC
-                LIMIT 40
                 """
             )
         ]
@@ -713,7 +710,6 @@ def dashboard_payload() -> dict:
             FROM employees e
             LEFT JOIN project_sites s ON s.id = e.project_site_id
             ORDER BY e.full_name
-            LIMIT 80
             """
         ):
             item = dict(row)
@@ -741,7 +737,6 @@ def dashboard_payload() -> dict:
                 FROM payment_instruments i
                 LEFT JOIN business_partners b ON b.id = i.partner_id
                 ORDER BY i.due_date, i.amount DESC
-                LIMIT 40
                 """
             )
         ]
