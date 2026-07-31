@@ -53,8 +53,30 @@ function partnerTypeLabel(value) {
   return labels[value] || value || "-";
 }
 
+function instrumentTypeLabel(value) {
+  const labels = {
+    cek: "Çek",
+    çek: "Çek",
+    senet: "Senet",
+    check: "Çek",
+    note: "Senet",
+  };
+  return labels[String(value || "").toLocaleLowerCase("tr-TR")] || value || "-";
+}
+
 function bankMatchLabel(value) {
   return value === "matched" ? "Mutabık" : "Bekliyor";
+}
+
+function matchTypeLabel(value) {
+  const labels = {
+    invoice: "Fatura",
+    partner: "Cari hareket",
+    expense: "Masraf",
+    transfer: "Virman",
+    payroll: "Personel / maaş",
+  };
+  return labels[value] || value || "-";
 }
 
 function movementTypeLabel(value) {
@@ -267,6 +289,103 @@ function downloadSpreadsheet(filename, rows) {
   link.download = outputName;
   link.click();
   URL.revokeObjectURL(link.href);
+}
+
+function asNumber(value) {
+  const parsed = Number(value || 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+const exportSchemas = {
+  ap: [
+    ["Fatura Tarihi", (row) => formatDate(row.invoice_date)],
+    ["Vade Tarihi", (row) => formatDate(row.due_date)],
+    ["Belge No", (row) => row.invoice_no || ""],
+    ["Cari", (row) => row.partner || ""],
+    ["Maliyet Merkezi", (row) => row.project_site || ""],
+    ["Alış Tutarı", (row) => asNumber(row.purchase_amount)],
+    ["KDV Tutarı", (row) => asNumber(row.vat_amount)],
+    ["Genel Toplam", (row) => asNumber(row.gross_total)],
+    ["Ödenen", (row) => asNumber(row.paid_amount)],
+    ["Kalan", (row) => asNumber(row.remaining_amount)],
+    ["Durum", (row) => statusLabel(row.payment_status || (asNumber(row.remaining_amount) > 0 ? "pending" : "paid"))],
+  ],
+  bank: [
+    ["Tarih", (row) => formatDate(row.transaction_date)],
+    ["Açıklama", (row) => row.transaction_type || ""],
+    ["Grup", (row) => row.transaction_group || ""],
+    ["Alt Kategori", (row) => row.sub_category || ""],
+    ["Net Tutar", (row) => asNumber(row.net_amount)],
+    ["Mutabakat Durumu", (row) => bankMatchLabel(row.match_status)],
+    ["Eşleşme Türü", (row) => matchTypeLabel(row.match_type)],
+    ["Hesap Kodu", (row) => row.account_code || ""],
+    ["Not", (row) => row.match_note || ""],
+  ],
+  paymentInvoices: [
+    ["Vade Tarihi", (row) => formatDate(row.due_date)],
+    ["Cari", (row) => row.partner || ""],
+    ["Fatura No", (row) => row.invoice_no || ""],
+    ["Kalan Tutar", (row) => asNumber(row.remaining_amount)],
+    ["Durum", (row) => statusLabel(row.payment_status)],
+  ],
+  instruments: [
+    ["Vade Tarihi", (row) => formatDate(row.due_date)],
+    ["Cari", (row) => row.partner || ""],
+    ["Evrak Tipi", (row) => instrumentTypeLabel(row.instrument_type)],
+    ["Evrak No", (row) => row.instrument_no || ""],
+    ["Banka", (row) => row.bank_name || ""],
+    ["Tutar", (row) => asNumber(row.amount)],
+    ["Durum", (row) => statusLabel(row.status)],
+  ],
+  partners: [
+    ["Cari ID", (row) => asNumber(row.id)],
+    ["Cari", (row) => row.name || ""],
+    ["Tip", (row) => partnerTypeLabel(row.partner_type)],
+    ["Fatura Sayısı", (row) => asNumber(row.invoice_count)],
+    ["Fatura Toplamı", (row) => asNumber(row.gross_total)],
+    ["Borç Toplamı", (row) => asNumber(row.debit_total)],
+    ["Alacak Toplamı", (row) => asNumber(row.credit_total)],
+    ["PDF Sayısı", (row) => asNumber(row.attachment_count)],
+    ["Açık Bakiye", (row) => asNumber(row.open_balance)],
+  ],
+  employees: [
+    ["Personel ID", (row) => asNumber(row.id)],
+    ["Ad Soyad", (row) => row.full_name || ""],
+    ["İşe Giriş", (row) => formatDate(row.hire_date)],
+    ["Kıdem / Meslek", (row) => cleanJobTitle(row)],
+    ["Şantiye", (row) => row.project_site || ""],
+    ["Çalıştığı Gün", (row) => asNumber(row.worked_days)],
+    ["Aylık Maaş", (row) => asNumber(row.monthly_salary)],
+    ["Avans", (row) => asNumber(row.advance_amount)],
+    ["Ödenecek Maaş", (row) => asNumber(row.paid_salary)],
+    ["Durum", (row) => statusLabel(row.status)],
+    ["PDF Sayısı", (row) => asNumber(row.attachment_count)],
+  ],
+  vat: [
+    ["Dönem", (row) => row.period || ""],
+    ["Alış Matrah", (row) => asNumber(row.purchase_base)],
+    ["Alış KDV", (row) => asNumber(row.purchase_vat)],
+    ["Satış Matrah", (row) => asNumber(row.sales_base)],
+    ["Tevkifat", (row) => asNumber(row.withholding)],
+    ["Net KDV", (row) => asNumber(row.net_vat)],
+  ],
+};
+
+const exportFileNames = {
+  ap: "alis-faturalari",
+  bank: "banka-mutabakati",
+  paymentInvoices: "odeme-faturalari",
+  instruments: "cek-senet-portfoyu",
+  partners: "cariler",
+  employees: "personel",
+  vat: "kdv-tevkifat",
+};
+
+function buildExportRows(schema, rows) {
+  return [
+    schema.map(([header]) => header),
+    ...rows.map((row) => schema.map(([, getter]) => getter(row))),
+  ];
 }
 
 function rowKey(value) {
@@ -1509,24 +1628,33 @@ function downloadTemplate() {
 }
 
 function exportReport(kind) {
-  const rows =
-    kind === "partners"
-      ? state.payload?.partners || []
-      : [
-          state.payload?.reports || {},
-          ...(state.payload?.controls || []).map((item) => ({
-            name: item.name,
-            count: item.count,
-            owner: item.owner,
-            action: item.action,
-          })),
-        ];
+  if (kind === "partners") {
+    const rows = state.payload?.partners || [];
+    if (!rows.length) {
+      showToast("Dışa aktarılacak rapor verisi yok.", false);
+      return;
+    }
+    downloadSpreadsheet("rapor-cariler.xlsx", buildExportRows(exportSchemas.partners, rows));
+    showToast("Rapor dışa aktarıldı");
+    return;
+  }
+
+  const reports = state.payload?.reports || {};
+  const controls = state.payload?.controls || [];
+  const rows = [
+    ["Cari Borç Toplamı", asNumber(reports.partnerDebit), "Borç kolon toplamı"],
+    ["Cari Alacak Toplamı", asNumber(reports.partnerCredit), "Alacak kolon toplamı"],
+    ["Açık Cari Bakiye", asNumber(reports.partnerOpenBalance), "Alacak eksi borç"],
+    ["Personel Net Ödeme", asNumber(reports.employeeNetPayable), "Maaş eksi avans"],
+    ["Mutabakat Bekleyen Banka Satırı", asNumber(reports.unmatchedBankLines), "Banka eşleştirme bekleyen satır"],
+    ["PDF Belge Sayısı", asNumber(reports.attachmentCount), "Cari/personel kartı ekleri"],
+    ...controls.map((item) => [item.name, asNumber(item.count), `${item.owner || ""} · ${item.action || ""}`]),
+  ];
   if (!rows.length) {
     showToast("Dışa aktarılacak rapor verisi yok.", false);
     return;
   }
-  const columns = Object.keys(rows[0] || {});
-  downloadSpreadsheet(`rapor-${kind}.xlsx`, [columns, ...rows.map((row) => columns.map((key) => row[key]))]);
+  downloadSpreadsheet("rapor-operasyon.xlsx", [["Başlık", "Değer", "Açıklama"], ...rows]);
   showToast("Rapor dışa aktarıldı");
 }
 
@@ -1710,8 +1838,8 @@ async function markSelectedPaid(list) {
 function exportRows(list) {
   const rows = requireSelection(list);
   if (!rows) return;
-  const columns = Object.keys(rows[0] || {});
-  downloadSpreadsheet(`${list}-secili-kayitlar.xlsx`, [columns, ...rows.map((row) => columns.map((key) => row[key]))]);
+  const schema = exportSchemas[list] || Object.keys(rows[0] || {}).map((key) => [key, (row) => row[key]]);
+  downloadSpreadsheet(`${exportFileNames[list] || list}-secili-kayitlar.xlsx`, buildExportRows(schema, rows));
   showToast("Seçili kayıtlar dışa aktarıldı");
 }
 
