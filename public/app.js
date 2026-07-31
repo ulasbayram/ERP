@@ -125,16 +125,146 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
-function csvCell(value) {
-  return `"${String(value ?? "").replaceAll('"', '""')}"`;
+function escapeXml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
 }
 
-function downloadCsv(filename, rows) {
-  const csv = rows.map((row) => row.map(csvCell).join(";")).join("\r\n");
-  const blob = new Blob(["\ufeffsep=;\r\n", csv], { type: "text/csv;charset=utf-8" });
+function columnName(index) {
+  let name = "";
+  let current = index + 1;
+  while (current > 0) {
+    const remainder = (current - 1) % 26;
+    name = String.fromCharCode(65 + remainder) + name;
+    current = Math.floor((current - 1) / 26);
+  }
+  return name;
+}
+
+function worksheetXml(rows) {
+  const sheetRows = rows
+    .map(
+      (row, rowIndex) =>
+        `<row r="${rowIndex + 1}">${row
+          .map((value, colIndex) => {
+            const ref = `${columnName(colIndex)}${rowIndex + 1}`;
+            if (typeof value === "number" && Number.isFinite(value)) {
+              return `<c r="${ref}"><v>${value}</v></c>`;
+            }
+            return `<c r="${ref}" t="inlineStr"><is><t>${escapeXml(value)}</t></is></c>`;
+          })
+          .join("")}</row>`
+    )
+    .join("");
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${sheetRows}</sheetData></worksheet>`;
+}
+
+const crcTable = Array.from({ length: 256 }, (_, index) => {
+  let value = index;
+  for (let bit = 0; bit < 8; bit += 1) {
+    value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+  }
+  return value >>> 0;
+});
+
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pushU16(target, value) {
+  target.push(value & 0xff, (value >>> 8) & 0xff);
+}
+
+function pushU32(target, value) {
+  target.push(value & 0xff, (value >>> 8) & 0xff, (value >>> 16) & 0xff, (value >>> 24) & 0xff);
+}
+
+function createZip(files) {
+  const encoder = new TextEncoder();
+  const output = [];
+  const centralDirectory = [];
+  const now = new Date();
+  const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | Math.floor(now.getSeconds() / 2);
+  const dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+
+  Object.entries(files).forEach(([name, content]) => {
+    const nameBytes = encoder.encode(name);
+    const contentBytes = encoder.encode(content);
+    const checksum = crc32(contentBytes);
+    const offset = output.length;
+
+    pushU32(output, 0x04034b50);
+    pushU16(output, 20);
+    pushU16(output, 0);
+    pushU16(output, 0);
+    pushU16(output, dosTime);
+    pushU16(output, dosDate);
+    pushU32(output, checksum);
+    pushU32(output, contentBytes.length);
+    pushU32(output, contentBytes.length);
+    pushU16(output, nameBytes.length);
+    pushU16(output, 0);
+    output.push(...nameBytes, ...contentBytes);
+
+    pushU32(centralDirectory, 0x02014b50);
+    pushU16(centralDirectory, 20);
+    pushU16(centralDirectory, 20);
+    pushU16(centralDirectory, 0);
+    pushU16(centralDirectory, 0);
+    pushU16(centralDirectory, dosTime);
+    pushU16(centralDirectory, dosDate);
+    pushU32(centralDirectory, checksum);
+    pushU32(centralDirectory, contentBytes.length);
+    pushU32(centralDirectory, contentBytes.length);
+    pushU16(centralDirectory, nameBytes.length);
+    pushU16(centralDirectory, 0);
+    pushU16(centralDirectory, 0);
+    pushU16(centralDirectory, 0);
+    pushU16(centralDirectory, 0);
+    pushU32(centralDirectory, 0);
+    pushU32(centralDirectory, offset);
+    centralDirectory.push(...nameBytes);
+  });
+
+  const centralOffset = output.length;
+  output.push(...centralDirectory);
+  pushU32(output, 0x06054b50);
+  pushU16(output, 0);
+  pushU16(output, 0);
+  pushU16(output, Object.keys(files).length);
+  pushU16(output, Object.keys(files).length);
+  pushU32(output, centralDirectory.length);
+  pushU32(output, centralOffset);
+  pushU16(output, 0);
+  return new Uint8Array(output);
+}
+
+function createXlsx(rows) {
+  return createZip({
+    "[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`,
+    "_rels/.rels": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`,
+    "xl/workbook.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Rapor" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+    "xl/_rels/workbook.xml.rels": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`,
+    "xl/worksheets/sheet1.xml": worksheetXml(rows),
+  });
+}
+
+function downloadSpreadsheet(filename, rows) {
+  const outputName = filename.replace(/\.csv$/i, ".xlsx");
+  const blob = new Blob([createXlsx(rows)], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
-  link.download = filename;
+  link.download = outputName;
   link.click();
   URL.revokeObjectURL(link.href);
 }
@@ -1370,7 +1500,7 @@ function focusImport() {
 }
 
 function downloadTemplate() {
-  downloadCsv("erp_import_sablonu.csv", [
+  downloadSpreadsheet("erp_import_sablonu.xlsx", [
     ["Tip", "Cari", "Ad Soyad", "Fatura No", "Tarih", "Vade", "Genel Toplam", "Ödenen", "Maaş", "Avans", "Şantiye"],
     ["Fatura", "ABC Tedarik", "", "FTR-001", "2026-07-30", "2026-08-15", "10000", "0", "", "", "Merkez"],
     ["Personel", "", "Ali Veli", "", "", "", "", "", "30000", "5000", "Merkez"],
@@ -1396,7 +1526,7 @@ function exportReport(kind) {
     return;
   }
   const columns = Object.keys(rows[0] || {});
-  downloadCsv(`rapor-${kind}.csv`, [columns, ...rows.map((row) => columns.map((key) => row[key]))]);
+  downloadSpreadsheet(`rapor-${kind}.xlsx`, [columns, ...rows.map((row) => columns.map((key) => row[key]))]);
   showToast("Rapor dışa aktarıldı");
 }
 
@@ -1581,7 +1711,7 @@ function exportRows(list) {
   const rows = requireSelection(list);
   if (!rows) return;
   const columns = Object.keys(rows[0] || {});
-  downloadCsv(`${list}-secili-kayitlar.csv`, [columns, ...rows.map((row) => columns.map((key) => row[key]))]);
+  downloadSpreadsheet(`${list}-secili-kayitlar.xlsx`, [columns, ...rows.map((row) => columns.map((key) => row[key]))]);
   showToast("Seçili kayıtlar dışa aktarıldı");
 }
 
