@@ -245,6 +245,12 @@ button:hover {
   margin-bottom: 14px;
 }
 
+.page-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 h1,
 h2,
 p {
@@ -713,7 +719,7 @@ tbody tr:hover {
 }
 
 .action-modal {
-  width: min(720px, 100%);
+  width: min(980px, 100%);
 }
 
 .record-grid {
@@ -738,6 +744,58 @@ tbody tr:hover {
   padding: 14px;
   color: var(--muted);
   background: var(--panel-soft);
+}
+
+.ledger-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ledger-summary {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.ledger-table-wrap {
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.ledger-table {
+  min-width: 860px;
+}
+
+.ledger-table th,
+.ledger-table td {
+  white-space: nowrap;
+}
+
+.ledger-table td:nth-child(4) {
+  min-width: 220px;
+  white-space: normal;
+}
+
+.attachment-panel {
+  display: grid;
+  gap: 8px;
+}
+
+.link-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 0 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: #263442;
+  text-decoration: none;
+}
+
+.report-strip {
+  margin-bottom: 12px;
 }
 
 .action-toast {

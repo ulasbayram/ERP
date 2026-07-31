@@ -13,7 +13,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . /app
 
-RUN mkdir -p /app/data/uploads /app/data/samples /app/data/backups \
+RUN mkdir -p /app/data/uploads /app/data/attachments /app/data/samples /app/data/backups \
     && useradd --create-home --shell /usr/sbin/nologin erp \
     && chown -R erp:erp /app/data
 

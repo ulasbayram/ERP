@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parent
 PUBLIC = ROOT / "public"
 DATA = ROOT / "data"
 UPLOADS = DATA / "uploads"
+ATTACHMENTS = DATA / "attachments"
 DB_PATH = DATA / "erp.sqlite3"
 SCHEMA = ROOT / "schema.sql"
 SESSION_COOKIE = "akim_erp_session"
@@ -251,6 +252,7 @@ def should_send_secure_cookie(headers) -> bool:
 def init_db() -> None:
     DATA.mkdir(parents=True, exist_ok=True)
     UPLOADS.mkdir(parents=True, exist_ok=True)
+    ATTACHMENTS.mkdir(parents=True, exist_ok=True)
     with connect() as conn:
         conn.executescript(SCHEMA.read_text(encoding="utf-8"))
         ensure_schema_migrations(conn)
@@ -261,6 +263,53 @@ def init_db() -> None:
 
 
 def ensure_schema_migrations(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS account_movements (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_kind TEXT NOT NULL,
+          account_id INTEGER NOT NULL,
+          movement_date TEXT NOT NULL,
+          movement_type TEXT NOT NULL,
+          direction TEXT NOT NULL,
+          amount REAL NOT NULL DEFAULT 0,
+          document_no TEXT,
+          description TEXT,
+          source_table TEXT,
+          source_id INTEGER,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS entity_attachments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          entity_type TEXT NOT NULL,
+          entity_id INTEGER NOT NULL,
+          file_name TEXT NOT NULL,
+          stored_name TEXT NOT NULL,
+          mime_type TEXT,
+          file_size INTEGER NOT NULL DEFAULT 0,
+          uploaded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS bank_transfer_vouchers (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          transfer_date TEXT NOT NULL,
+          from_account_code TEXT NOT NULL,
+          to_account_code TEXT NOT NULL,
+          amount REAL NOT NULL DEFAULT 0,
+          description TEXT,
+          source_bank_line_id INTEGER,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (source_bank_line_id) REFERENCES bank_statement_lines(id)
+        )
+        """
+    )
     bank_columns = {row["name"] for row in conn.execute("PRAGMA table_info(bank_statement_lines)")}
     bank_migrations = {
         "match_status": "ALTER TABLE bank_statement_lines ADD COLUMN match_status TEXT NOT NULL DEFAULT 'unmatched'",
@@ -274,6 +323,52 @@ def ensure_schema_migrations(conn: sqlite3.Connection) -> None:
     for column, statement in bank_migrations.items():
         if column not in bank_columns:
             conn.execute(statement)
+    conn.execute(
+        """
+        INSERT INTO account_movements(
+          account_kind, account_id, movement_date, movement_type, direction, amount,
+          document_no, description, source_table, source_id
+        )
+        SELECT 'partner', p.partner_id, COALESCE(p.invoice_date, date('now')), 'invoice', 'credit',
+               p.gross_total, p.invoice_no, COALESCE(p.description, 'Alış faturası'),
+               'purchase_invoices', p.id
+        FROM purchase_invoices p
+        WHERE p.partner_id IS NOT NULL
+          AND p.gross_total > 0
+          AND NOT EXISTS (
+            SELECT 1
+            FROM account_movements m
+            WHERE m.account_kind = 'partner'
+              AND m.account_id = p.partner_id
+              AND m.source_table = 'purchase_invoices'
+              AND m.source_id = p.id
+              AND m.movement_type = 'invoice'
+          )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO account_movements(
+          account_kind, account_id, movement_date, movement_type, direction, amount,
+          document_no, description, source_table, source_id
+        )
+        SELECT 'partner', p.partner_id, COALESCE(p.invoice_date, date('now')), 'payment', 'debit',
+               p.paid_amount, p.invoice_no, 'Fatura ödemesi',
+               'purchase_invoices', p.id
+        FROM purchase_invoices p
+        WHERE p.partner_id IS NOT NULL
+          AND p.paid_amount > 0
+          AND NOT EXISTS (
+            SELECT 1
+            FROM account_movements m
+            WHERE m.account_kind = 'partner'
+              AND m.account_id = p.partner_id
+              AND m.source_table = 'purchase_invoices'
+              AND m.source_id = p.id
+              AND m.movement_type = 'payment'
+          )
+        """
+    )
 
 
 def header_map(ws) -> dict[str, int]:
@@ -321,6 +416,44 @@ def get_or_create_site(conn: sqlite3.Connection, name: str) -> int | None:
         return int(row["id"])
     cur = conn.execute("INSERT INTO project_sites(name) VALUES (?)", (clean,))
     return int(cur.lastrowid)
+
+
+def add_account_movement(
+    conn: sqlite3.Connection,
+    account_kind: str,
+    account_id: int,
+    movement_date: str | None,
+    movement_type: str,
+    direction: str,
+    amount: float,
+    document_no: str | None = None,
+    description: str | None = None,
+    source_table: str | None = None,
+    source_id: int | None = None,
+) -> None:
+    if account_id <= 0 or amount <= 0:
+        return
+    conn.execute(
+        """
+        INSERT INTO account_movements(
+          account_kind, account_id, movement_date, movement_type, direction, amount,
+          document_no, description, source_table, source_id
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            account_kind,
+            account_id,
+            movement_date or date.today().isoformat(),
+            movement_type,
+            direction,
+            amount,
+            document_no,
+            description,
+            source_table,
+            source_id,
+        ),
+    )
 
 
 def reset_operational_tables(conn: sqlite3.Connection) -> None:
@@ -717,33 +850,61 @@ def dashboard_payload() -> dict:
             )
         ]
 
-        partner_rows = [
-            dict(row)
-            for row in conn.execute(
-                """
-                SELECT b.id, b.name, b.partner_type,
-                       COUNT(p.id) AS invoice_count,
-                       COALESCE(SUM(p.gross_total), 0) AS gross_total,
-                       COALESCE(SUM(p.remaining_amount), 0) AS open_balance
-                FROM business_partners b
-                LEFT JOIN purchase_invoices p ON p.partner_id = b.id
-                GROUP BY b.id
-                ORDER BY open_balance DESC, gross_total DESC
-                """
-            )
-        ]
+        partner_rows = []
+        for row in conn.execute(
+            """
+            SELECT b.id, b.name, b.partner_type,
+                   COALESCE(inv.invoice_count, 0) AS invoice_count,
+                   COALESCE(inv.gross_total, 0) AS gross_total,
+                   COALESCE(m.debit_total, 0) AS debit_total,
+                   COALESCE(m.credit_total, 0) AS credit_total,
+                   COALESCE(a.file_count, 0) AS attachment_count
+            FROM business_partners b
+            LEFT JOIN (
+              SELECT partner_id, COUNT(*) AS invoice_count, COALESCE(SUM(gross_total), 0) AS gross_total
+              FROM purchase_invoices
+              GROUP BY partner_id
+            ) inv ON inv.partner_id = b.id
+            LEFT JOIN (
+              SELECT account_id,
+                     COALESCE(SUM(CASE WHEN direction = 'debit' THEN amount ELSE 0 END), 0) AS debit_total,
+                     COALESCE(SUM(CASE WHEN direction = 'credit' THEN amount ELSE 0 END), 0) AS credit_total
+              FROM account_movements
+              WHERE account_kind = 'partner'
+              GROUP BY account_id
+            ) m ON m.account_id = b.id
+            LEFT JOIN (
+              SELECT entity_id, COUNT(*) AS file_count
+              FROM entity_attachments
+              WHERE entity_type = 'partner'
+              GROUP BY entity_id
+            ) a ON a.entity_id = b.id
+            GROUP BY b.id
+            ORDER BY ABS(credit_total - debit_total) DESC, gross_total DESC
+            """
+        ):
+            item = dict(row)
+            item["open_balance"] = max(float(item["credit_total"] or 0) - float(item["debit_total"] or 0), 0)
+            partner_rows.append(item)
 
         employee_rows = []
         for row in conn.execute(
             """
             SELECT e.id, e.full_name, e.job_code, e.hire_date, e.worked_days, e.status,
                    e.monthly_salary, e.advance_amount, COALESCE(s.name, '') AS project_site,
+                   COALESCE(a.file_count, 0) AS attachment_count,
                    CASE
                      WHEN e.monthly_salary - e.advance_amount < 0 THEN 0
                      ELSE e.monthly_salary - e.advance_amount
                    END AS paid_salary
             FROM employees e
             LEFT JOIN project_sites s ON s.id = e.project_site_id
+            LEFT JOIN (
+              SELECT entity_id, COUNT(*) AS file_count
+              FROM entity_attachments
+              WHERE entity_type = 'employee'
+              GROUP BY entity_id
+            ) a ON a.entity_id = e.id
             ORDER BY e.full_name
             """
         ):
@@ -817,6 +978,40 @@ def dashboard_payload() -> dict:
                 SELECT id, name, status
                 FROM project_sites
                 ORDER BY name
+                """
+            )
+        ]
+
+        movement_rows = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT id, account_kind, account_id, movement_date, movement_type, direction,
+                       amount, document_no, description, source_table, source_id
+                FROM account_movements
+                ORDER BY movement_date DESC, id DESC
+                """
+            )
+        ]
+
+        attachment_rows = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT id, entity_type, entity_id, file_name, mime_type, file_size, uploaded_at
+                FROM entity_attachments
+                ORDER BY uploaded_at DESC, id DESC
+                """
+            )
+        ]
+
+        transfer_rows = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT id, transfer_date, from_account_code, to_account_code, amount, description, source_bank_line_id
+                FROM bank_transfer_vouchers
+                ORDER BY transfer_date DESC, id DESC
                 """
             )
         ]
@@ -914,6 +1109,17 @@ def dashboard_payload() -> dict:
             "vatSummary": vat_rows,
             "bankGroups": bank_group_rows,
             "projectSites": project_site_rows,
+            "accountMovements": movement_rows,
+            "attachments": attachment_rows,
+            "transferVouchers": transfer_rows,
+            "reports": {
+                "partnerDebit": sum(float(item.get("debit_total") or 0) for item in partner_rows),
+                "partnerCredit": sum(float(item.get("credit_total") or 0) for item in partner_rows),
+                "partnerOpenBalance": sum(float(item.get("open_balance") or 0) for item in partner_rows),
+                "employeeNetPayable": sum(float(item.get("paid_salary") or 0) for item in employee_rows),
+                "unmatchedBankLines": unmatched_bank_lines,
+                "attachmentCount": len(attachment_rows),
+            },
         }
 
 
@@ -1002,6 +1208,33 @@ class ERPHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/health":
             self.send_json({"status": "ok"})
+            return
+        if parsed.path.startswith("/api/attachments/"):
+            user = self.current_user()
+            if not user:
+                self.send_json({"error": "Oturum gerekli."}, 401)
+                return
+            try:
+                attachment_id = int(parsed.path.rsplit("/", 1)[-1])
+            except ValueError:
+                self.send_json({"error": "Geçerli dosya seçilmedi."}, 400)
+                return
+            with connect() as conn:
+                row = conn.execute("SELECT * FROM entity_attachments WHERE id = ?", (attachment_id,)).fetchone()
+            if not row:
+                self.send_json({"error": "Dosya bulunamadı."}, 404)
+                return
+            path = ATTACHMENTS / row["stored_name"]
+            if not path.exists() or path.parent != ATTACHMENTS:
+                self.send_json({"error": "Dosya bulunamadı."}, 404)
+                return
+            payload = path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", row["mime_type"] or "application/pdf")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Content-Disposition", f'inline; filename="{Path(row["file_name"]).name}"')
+            self.end_headers()
+            self.wfile.write(payload)
             return
         if parsed.path in ("/", "/index.html"):
             if not self.current_user():
@@ -1284,13 +1517,41 @@ class ERPHandler(SimpleHTTPRequestHandler):
                             remaining_amount,
                         ),
                     )
+                    invoice_id = int(cur.lastrowid)
+                    add_account_movement(
+                        conn,
+                        "partner",
+                        int(partner_id or 0),
+                        normalize_text(payload.get("invoiceDate")) or date.today().isoformat(),
+                        "invoice",
+                        "credit",
+                        gross_total,
+                        normalize_text(payload.get("invoiceNo")) or None,
+                        normalize_text(payload.get("description")) or "Alış faturası",
+                        "purchase_invoices",
+                        invoice_id,
+                    )
+                    if paid_amount > 0:
+                        add_account_movement(
+                            conn,
+                            "partner",
+                            int(partner_id or 0),
+                            normalize_text(payload.get("invoiceDate")) or date.today().isoformat(),
+                            "payment",
+                            "debit",
+                            paid_amount,
+                            normalize_text(payload.get("invoiceNo")) or None,
+                            "Fatura ödemesi",
+                            "purchase_invoices",
+                            invoice_id,
+                        )
                     conn.execute(
                         "INSERT INTO audit_events(actor, action, entity_name, entity_id, new_value) VALUES (?, ?, ?, ?, ?)",
                         (
                             user["email"],
                             "create_purchase_invoice",
                             "purchase_invoices",
-                            str(cur.lastrowid),
+                            str(invoice_id),
                             json.dumps({"partner": partner_name, "gross_total": gross_total}, ensure_ascii=False),
                         ),
                     )
@@ -1299,6 +1560,113 @@ class ERPHandler(SimpleHTTPRequestHandler):
                 self.send_json({"error": "Geçersiz JSON."}, 400)
             except Exception as exc:
                 self.send_json({"error": f"Fatura kaydedilemedi: {exc}"}, 500)
+            return
+
+        if parsed.path == "/api/account-movements":
+            try:
+                payload = read_json_body(self)
+                account_kind = normalize_text(payload.get("accountKind"))
+                account_id = int(payload.get("accountId", 0))
+                movement_type = normalize_text(payload.get("movementType")) or "debit_note"
+                direction = normalize_text(payload.get("direction")) or "debit"
+                amount = to_float(payload.get("amount"))
+                movement_date = normalize_text(payload.get("movementDate")) or date.today().isoformat()
+                document_no = normalize_text(payload.get("documentNo")) or None
+                description = normalize_text(payload.get("description")) or None
+                if account_kind not in {"partner", "employee"}:
+                    self.send_json({"error": "Geçerli kart tipi seç."}, 400)
+                    return
+                if direction not in {"debit", "credit"}:
+                    self.send_json({"error": "Borç/alacak yönü seç."}, 400)
+                    return
+                if account_id <= 0 or amount <= 0:
+                    self.send_json({"error": "Kart ve tutar zorunlu."}, 400)
+                    return
+                with connect() as conn:
+                    table = "business_partners" if account_kind == "partner" else "employees"
+                    if not conn.execute(f"SELECT id FROM {table} WHERE id = ?", (account_id,)).fetchone():
+                        self.send_json({"error": "Kart bulunamadı."}, 404)
+                        return
+                    add_account_movement(
+                        conn,
+                        account_kind,
+                        account_id,
+                        movement_date,
+                        movement_type,
+                        direction,
+                        amount,
+                        document_no,
+                        description,
+                        "manual",
+                        None,
+                    )
+                    conn.execute(
+                        "INSERT INTO audit_events(actor, action, entity_name, entity_id, new_value) VALUES (?, ?, ?, ?, ?)",
+                        (
+                            user["email"],
+                            "create_account_movement",
+                            "account_movements",
+                            str(account_id),
+                            json.dumps(payload, ensure_ascii=False),
+                        ),
+                    )
+                self.send_json({"dashboard": dashboard_payload()})
+            except json.JSONDecodeError:
+                self.send_json({"error": "Geçersiz JSON."}, 400)
+            except Exception as exc:
+                self.send_json({"error": f"Hareket kaydedilemedi: {exc}"}, 500)
+            return
+
+        if parsed.path == "/api/bank/transfer":
+            try:
+                payload = read_json_body(self)
+                transfer_date = normalize_text(payload.get("transferDate")) or date.today().isoformat()
+                from_account_code = normalize_text(payload.get("fromAccountCode"))
+                to_account_code = normalize_text(payload.get("toAccountCode"))
+                amount = to_float(payload.get("amount"))
+                description = normalize_text(payload.get("description")) or None
+                source_bank_line_id = int(to_float(payload.get("sourceBankLineId"))) if payload.get("sourceBankLineId") else None
+                if not from_account_code or not to_account_code or amount <= 0:
+                    self.send_json({"error": "Virman için çıkış hesabı, giriş hesabı ve tutar zorunlu."}, 400)
+                    return
+                with connect() as conn:
+                    cur = conn.execute(
+                        """
+                        INSERT INTO bank_transfer_vouchers(
+                          transfer_date, from_account_code, to_account_code, amount, description, source_bank_line_id
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (transfer_date, from_account_code, to_account_code, amount, description, source_bank_line_id),
+                    )
+                    if source_bank_line_id:
+                        conn.execute(
+                            """
+                            UPDATE bank_statement_lines
+                            SET match_status = 'matched',
+                                match_type = 'transfer',
+                                account_code = ?,
+                                match_note = ?,
+                                matched_at = CURRENT_TIMESTAMP
+                            WHERE id = ?
+                            """,
+                            (f"{from_account_code}>{to_account_code}", description, source_bank_line_id),
+                        )
+                    conn.execute(
+                        "INSERT INTO audit_events(actor, action, entity_name, entity_id, new_value) VALUES (?, ?, ?, ?, ?)",
+                        (
+                            user["email"],
+                            "create_bank_transfer",
+                            "bank_transfer_vouchers",
+                            str(cur.lastrowid),
+                            json.dumps(payload, ensure_ascii=False),
+                        ),
+                    )
+                self.send_json({"dashboard": dashboard_payload()})
+            except json.JSONDecodeError:
+                self.send_json({"error": "Geçersiz JSON."}, 400)
+            except Exception as exc:
+                self.send_json({"error": f"Virman fişi kaydedilemedi: {exc}"}, 500)
             return
 
         if parsed.path == "/api/purchase-invoices/mark-paid":
@@ -1310,6 +1678,17 @@ class ERPHandler(SimpleHTTPRequestHandler):
                     return
                 placeholders = ",".join("?" for _ in ids)
                 with connect() as conn:
+                    rows_before = [
+                        dict(row)
+                        for row in conn.execute(
+                            f"""
+                            SELECT id, partner_id, invoice_date, invoice_no, remaining_amount
+                            FROM purchase_invoices
+                            WHERE id IN ({placeholders})
+                            """,
+                            ids,
+                        )
+                    ]
                     conn.execute(
                         f"""
                         UPDATE purchase_invoices
@@ -1320,6 +1699,23 @@ class ERPHandler(SimpleHTTPRequestHandler):
                         """,
                         ids,
                     )
+                    for invoice in rows_before:
+                        remaining = float(invoice.get("remaining_amount") or 0)
+                        partner_id = int(invoice.get("partner_id") or 0)
+                        if partner_id > 0 and remaining > 0:
+                            add_account_movement(
+                                conn,
+                                "partner",
+                                partner_id,
+                                date.today().isoformat(),
+                                "payment",
+                                "debit",
+                                remaining,
+                                invoice.get("invoice_no"),
+                                "Ödendi işaretleme",
+                                "purchase_invoices",
+                                int(invoice["id"]),
+                            )
                     conn.execute(
                         "INSERT INTO audit_events(actor, action, entity_name, new_value) VALUES (?, ?, ?, ?)",
                         (
@@ -1366,8 +1762,10 @@ class ERPHandler(SimpleHTTPRequestHandler):
                         if not conn.execute("SELECT id FROM business_partners WHERE id = ?", (partner_id,)).fetchone():
                             self.send_json({"error": "Cari bulunamadı."}, 404)
                             return
+                    invoice_row = None
                     if invoice_id:
-                        if not conn.execute("SELECT id FROM purchase_invoices WHERE id = ?", (invoice_id,)).fetchone():
+                        invoice_row = conn.execute("SELECT id, partner_id, invoice_no FROM purchase_invoices WHERE id = ?", (invoice_id,)).fetchone()
+                        if not invoice_row:
                             self.send_json({"error": "Fatura bulunamadı."}, 404)
                             return
                     conn.execute(
@@ -1384,6 +1782,26 @@ class ERPHandler(SimpleHTTPRequestHandler):
                         """,
                         (match_type, partner_id, invoice_id, account_code, match_note, line_id),
                     )
+                    conn.execute(
+                        "DELETE FROM account_movements WHERE source_table = 'bank_statement_lines' AND source_id = ?",
+                        (line_id,),
+                    )
+                    resolved_partner_id = partner_id or (int(invoice_row["partner_id"] or 0) if invoice_row else None)
+                    net_amount = float(before["net_amount"] or 0)
+                    if match_type in {"invoice", "partner"} and resolved_partner_id and net_amount:
+                        add_account_movement(
+                            conn,
+                            "partner",
+                            int(resolved_partner_id),
+                            normalize_text(before["transaction_date"]) or date.today().isoformat(),
+                            "payment" if net_amount < 0 else "collection",
+                            "debit" if net_amount < 0 else "credit",
+                            abs(net_amount),
+                            invoice_row["invoice_no"] if invoice_row else None,
+                            match_note or normalize_text(before["transaction_type"]) or "Banka hareketi",
+                            "bank_statement_lines",
+                            line_id,
+                        )
                     conn.execute(
                         "INSERT INTO audit_events(actor, action, entity_name, entity_id, old_value, new_value) VALUES (?, ?, ?, ?, ?, ?)",
                         (
@@ -1570,6 +1988,80 @@ class ERPHandler(SimpleHTTPRequestHandler):
                 self.send_json({"error": "Geçersiz JSON."}, 400)
             except Exception as exc:
                 self.send_json({"error": f"Personel güncellenemedi: {exc}"}, 500)
+            return
+
+        if parsed.path == "/api/attachments":
+            ctype, _ = cgi.parse_header(self.headers.get("content-type"))
+            if ctype != "multipart/form-data":
+                self.send_json({"error": "PDF dosyası multipart/form-data olarak gönderilmeli."}, 400)
+                return
+            content_length = int(self.headers.get("content-length", "0") or 0)
+            if content_length > MAX_UPLOAD_BYTES:
+                self.send_json({"error": "Dosya boyutu izin verilen sınırı aşıyor."}, 413)
+                return
+
+            form = cgi.FieldStorage(
+                fp=self.rfile,
+                headers=self.headers,
+                environ={
+                    "REQUEST_METHOD": "POST",
+                    "CONTENT_TYPE": self.headers.get("content-type"),
+                },
+            )
+            entity_type = normalize_text(form.getfirst("entityType"))
+            entity_id = int(to_float(form.getfirst("entityId")))
+            file_item = form["file"] if "file" in form else None
+            if entity_type not in {"partner", "employee"} or entity_id <= 0:
+                self.send_json({"error": "Geçerli kart seçilmedi."}, 400)
+                return
+            if file_item is None or not getattr(file_item, "filename", ""):
+                self.send_json({"error": "PDF dosyası seçilmedi."}, 400)
+                return
+
+            original_name = Path(file_item.filename).name
+            if not original_name.lower().endswith(".pdf"):
+                self.send_json({"error": "Kart eklerine şimdilik yalnızca PDF yüklenebilir."}, 400)
+                return
+
+            table = "business_partners" if entity_type == "partner" else "employees"
+            with connect() as conn:
+                exists = conn.execute(f"SELECT id FROM {table} WHERE id = ?", (entity_id,)).fetchone()
+                if not exists:
+                    self.send_json({"error": "Kart bulunamadı."}, 404)
+                    return
+
+            ATTACHMENTS.mkdir(parents=True, exist_ok=True)
+            stored_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(8)}_{original_name}"
+            saved = ATTACHMENTS / stored_name
+            with saved.open("wb") as handle:
+                shutil.copyfileobj(file_item.file, handle)
+
+            with connect() as conn:
+                cur = conn.execute(
+                    """
+                    INSERT INTO entity_attachments(entity_type, entity_id, file_name, stored_name, mime_type, file_size)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        entity_type,
+                        entity_id,
+                        original_name,
+                        stored_name,
+                        getattr(file_item, "type", None) or "application/pdf",
+                        saved.stat().st_size,
+                    ),
+                )
+                conn.execute(
+                    "INSERT INTO audit_events(actor, action, entity_name, entity_id, new_value) VALUES (?, ?, ?, ?, ?)",
+                    (
+                        user["email"],
+                        "upload_attachment",
+                        "entity_attachments",
+                        str(cur.lastrowid),
+                        json.dumps({"entity_type": entity_type, "entity_id": entity_id, "file_name": original_name}, ensure_ascii=False),
+                    ),
+                )
+            self.send_json({"dashboard": dashboard_payload()})
             return
 
         if parsed.path != "/api/import":

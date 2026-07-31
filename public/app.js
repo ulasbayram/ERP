@@ -57,6 +57,25 @@ function bankMatchLabel(value) {
   return value === "matched" ? "Mutabık" : "Bekliyor";
 }
 
+function movementTypeLabel(value) {
+  const labels = {
+    opening_balance: "Açılış bakiyesi",
+    invoice: "Fatura",
+    payment: "Ödeme / tahsilat",
+    collection: "Tahsilat",
+    debit_note: "Borç dekontu",
+    credit_note: "Alacak dekontu",
+    advance: "Avans",
+    salary: "Maaş tahakkuku",
+    transfer: "Virman",
+  };
+  return labels[value] || value || "-";
+}
+
+function directionLabel(value) {
+  return value === "credit" ? "Alacak" : "Borç";
+}
+
 function toTurkishTitle(value) {
   const letters = {
     i: "İ",
@@ -104,6 +123,20 @@ function escapeHtml(value) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+function csvCell(value) {
+  return `"${String(value ?? "").replaceAll('"', '""')}"`;
+}
+
+function downloadCsv(filename, rows) {
+  const csv = rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
+  const blob = new Blob(["\ufeff", csv], { type: "text/csv;charset=utf-8" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(link.href);
 }
 
 function rowKey(value) {
@@ -340,7 +373,10 @@ function renderBank(rows = []) {
               <td>${escapeHtml(row.transaction_group || "-")} / ${escapeHtml(row.sub_category || "-")}</td>
               <td class="amount">${formatMoney(row.net_amount)}</td>
               <td><span class="badge ${row.match_status === "matched" ? "paid" : "pending"}">${bankMatchLabel(row.match_status)}</span></td>
-              <td><button class="ghost" data-bank-match="${row.id}">Eşleştir</button></td>
+              <td class="row-actions">
+                <button class="ghost" data-bank-match="${row.id}">Eşleştir</button>
+                <button class="ghost" data-bank-transfer="${row.id}">Virman</button>
+              </td>
             </tr>
           `
         )
@@ -351,6 +387,12 @@ function renderBank(rows = []) {
     button.addEventListener("click", () => {
       const row = rows.find((item) => item.id === Number(button.dataset.bankMatch));
       openBankMatch(row);
+    });
+  });
+  document.querySelectorAll("[data-bank-transfer]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const row = rows.find((item) => item.id === Number(button.dataset.bankTransfer));
+      openBankTransferModal(row);
     });
   });
   wireSelection("bank", filtered.map((row) => row.id));
@@ -398,17 +440,27 @@ function renderPartners(rows = []) {
   document.querySelector("#partnerRows").innerHTML = filtered
     .map(
       (row) => `
-        <tr>
+        <tr data-partner="${row.id}">
           ${checkboxCell("partners", row.id)}
           <td>${escapeHtml(row.name)}</td>
           <td>${escapeHtml(partnerTypeLabel(row.partner_type))}</td>
           <td class="amount">${formatNumber(row.invoice_count)}</td>
           <td class="amount">${formatMoney(row.gross_total)}</td>
           <td class="amount">${formatMoney(row.open_balance)}</td>
+          <td class="row-actions">
+            <button class="ghost" data-open-partner-summary>Özet</button>
+            <button class="ghost" data-open-partner-pdf>PDF</button>
+          </td>
         </tr>
       `
     )
     .join("");
+
+  document.querySelectorAll("[data-partner]").forEach((rowEl) => {
+    const partner = rows.find((item) => item.id === Number(rowEl.dataset.partner));
+    rowEl.querySelector("[data-open-partner-summary]")?.addEventListener("click", () => openAccountSummary("partner", partner));
+    rowEl.querySelector("[data-open-partner-pdf]")?.addEventListener("click", () => openAttachmentModal("partner", partner));
+  });
   wireSelection("partners", filtered.map((row) => row.id));
 }
 
@@ -430,7 +482,12 @@ function renderEmployees(rows = []) {
             <td class="amount">${formatMoney(row.advance_amount)}</td>
             <td class="amount">${formatMoney(row.paid_salary)}</td>
             <td><span class="badge ${row.status}">${statusLabel(row.status)}</span></td>
-            <td class="row-actions"><button class="ghost" data-open-site>Şantiye</button><button class="ghost" data-open-advance>Avans</button></td>
+            <td class="row-actions">
+              <button class="ghost" data-open-employee-summary>Özet</button>
+              <button class="ghost" data-open-site>Şantiye</button>
+              <button class="ghost" data-open-advance>Avans</button>
+              <button class="ghost" data-open-employee-pdf>PDF</button>
+            </td>
           </tr>
         `;
       }
@@ -445,6 +502,14 @@ function renderEmployees(rows = []) {
     rowEl.querySelector("[data-open-site]").addEventListener("click", () => {
       const employee = rows.find((item) => item.id === Number(rowEl.dataset.employee));
       openSiteModal(employee);
+    });
+    rowEl.querySelector("[data-open-employee-summary]").addEventListener("click", () => {
+      const employee = rows.find((item) => item.id === Number(rowEl.dataset.employee));
+      openAccountSummary("employee", employee);
+    });
+    rowEl.querySelector("[data-open-employee-pdf]").addEventListener("click", () => {
+      const employee = rows.find((item) => item.id === Number(rowEl.dataset.employee));
+      openAttachmentModal("employee", employee);
     });
   });
   wireSelection("employees", filtered.map((row) => row.id));
@@ -570,6 +635,64 @@ function renderVat(rows = []) {
         .join("")
     : `<tr>${selectColumnEmpty()}<td colspan="6">KDV hareketi yok.</td></tr>`;
   wireSelection("vat", rows.map((row) => row.period || row.id));
+}
+
+function renderReports(payload = {}) {
+  const reports = payload.reports || {};
+  const kpis = [
+    ["Cari borç", formatMoney(reports.partnerDebit), "Borç kolon toplamı"],
+    ["Cari alacak", formatMoney(reports.partnerCredit), "Alacak kolon toplamı"],
+    ["Açık cari bakiye", formatMoney(reports.partnerOpenBalance), "Alacak eksi borç"],
+    ["Personel net", formatMoney(reports.employeeNetPayable), "Maaş eksi avans"],
+    ["Mutabakat bekleyen", formatNumber(reports.unmatchedBankLines), "Banka satırı"],
+    ["PDF belge", formatNumber(reports.attachmentCount), "Kart içi ek"],
+  ];
+  const reportKpis = document.querySelector("#reportKpis");
+  if (reportKpis) {
+    reportKpis.innerHTML = kpis
+      .map(([label, value, hint]) => `<article class="kpi"><span>${label}</span><strong>${value}</strong><small>${hint}</small></article>`)
+      .join("");
+  }
+
+  const partnerRows = [...(payload.partners || [])]
+    .sort((a, b) => Math.abs(Number(b.open_balance || 0)) - Math.abs(Number(a.open_balance || 0)))
+    .slice(0, 12);
+  const partnerTarget = document.querySelector("#reportPartnerRows");
+  if (partnerTarget) {
+    partnerTarget.innerHTML = partnerRows.length
+      ? partnerRows
+          .map(
+            (row) => `
+              <article class="compact-item">
+                <div><b>${escapeHtml(row.name)}</b><span>${escapeHtml(partnerTypeLabel(row.partner_type))} · ${formatNumber(row.invoice_count)} fatura · ${formatNumber(row.attachment_count)} PDF</span></div>
+                <strong>${formatMoney(row.open_balance)}</strong>
+              </article>
+            `
+          )
+          .join("")
+      : `<div class="empty-state">Cari raporu için kayıt yok.</div>`;
+  }
+
+  const operationRows = [
+    ["Açık alış faturaları", payload.kpis?.pendingInvoices || 0, formatMoney(payload.kpis?.invoiceRemaining)],
+    ["Mutabakat bekleyen banka", payload.kpis?.unmatchedBankLines || 0, "Eşleştirme bekliyor"],
+    ["Tekrarlı fatura no", payload.kpis?.duplicateInvoices || 0, "Kontrol gerekli"],
+    ["Tekrarlı personel adı", payload.kpis?.duplicateEmployees || 0, "Kontrol gerekli"],
+    ["Virman fişi", (payload.transferVouchers || []).length, formatMoney((payload.transferVouchers || []).reduce((sum, row) => sum + Number(row.amount || 0), 0))],
+  ];
+  const operationTarget = document.querySelector("#reportOperationRows");
+  if (operationTarget) {
+    operationTarget.innerHTML = operationRows
+      .map(
+        ([label, count, hint]) => `
+          <article class="compact-item">
+            <div><b>${escapeHtml(label)}</b><span>${escapeHtml(hint)}</span></div>
+            <strong>${formatNumber(count)}</strong>
+          </article>
+        `
+      )
+      .join("");
+  }
 }
 
 function renderImportInfo(payload = {}) {
@@ -772,6 +895,250 @@ async function saveNewRecord(event) {
   }
 }
 
+function accountDisplayName(kind, row) {
+  if (!row) return "-";
+  return kind === "employee" ? row.full_name : row.name;
+}
+
+function attachmentsFor(kind, id) {
+  return (state.payload?.attachments || []).filter((item) => item.entity_type === kind && Number(item.entity_id) === Number(id));
+}
+
+function employeeSyntheticMovements(row) {
+  if (!row) return [];
+  const movementDate = new Date().toISOString().slice(0, 10);
+  const rows = [];
+  if (Number(row.monthly_salary || 0) > 0) {
+    rows.push({
+      id: `salary-${row.id}`,
+      account_kind: "employee",
+      account_id: row.id,
+      movement_date: movementDate,
+      movement_type: "salary",
+      direction: "credit",
+      amount: Number(row.monthly_salary || 0),
+      document_no: "BORDRO",
+      description: "Aylık maaş tahakkuku",
+      source_table: "employees",
+    });
+  }
+  if (Number(row.advance_amount || 0) > 0) {
+    rows.push({
+      id: `advance-${row.id}`,
+      account_kind: "employee",
+      account_id: row.id,
+      movement_date: movementDate,
+      movement_type: "advance",
+      direction: "debit",
+      amount: Number(row.advance_amount || 0),
+      document_no: "AVANS",
+      description: "Maaştan mahsup edilen avans",
+      source_table: "employees",
+    });
+  }
+  return rows;
+}
+
+function movementsFor(kind, row) {
+  const persisted = (state.payload?.accountMovements || []).filter(
+    (item) => item.account_kind === kind && Number(item.account_id) === Number(row?.id)
+  );
+  const synthetic = kind === "employee" ? employeeSyntheticMovements(row) : [];
+  return [...persisted, ...synthetic].sort((a, b) => {
+    const dateCompare = String(a.movement_date || "").localeCompare(String(b.movement_date || ""));
+    if (dateCompare !== 0) return dateCompare;
+    return String(a.id || "").localeCompare(String(b.id || ""));
+  });
+}
+
+function movementTotals(movements = []) {
+  const debit = movements.reduce((sum, item) => sum + (item.direction === "debit" ? Number(item.amount || 0) : 0), 0);
+  const credit = movements.reduce((sum, item) => sum + (item.direction === "credit" ? Number(item.amount || 0) : 0), 0);
+  return { debit, credit, balance: credit - debit };
+}
+
+function ledgerRowsHtml(movements = []) {
+  if (!movements.length) {
+    return `<tr><td colspan="7">Hareket yok.</td></tr>`;
+  }
+  let balance = 0;
+  return movements
+    .map((item) => {
+      const amount = Number(item.amount || 0);
+      const debit = item.direction === "debit" ? amount : 0;
+      const credit = item.direction === "credit" ? amount : 0;
+      balance += credit - debit;
+      return `
+        <tr>
+          <td>${formatDate(item.movement_date)}</td>
+          <td>${escapeHtml(movementTypeLabel(item.movement_type))}</td>
+          <td>${escapeHtml(item.document_no || "-")}</td>
+          <td>${escapeHtml(item.description || "-")}</td>
+          <td class="amount">${debit ? formatMoney(debit) : "-"}</td>
+          <td class="amount">${credit ? formatMoney(credit) : "-"}</td>
+          <td class="amount">${formatMoney(balance)}</td>
+        </tr>
+      `;
+    })
+    .join("");
+}
+
+function attachmentListHtml(kind, id) {
+  const files = attachmentsFor(kind, id);
+  if (!files.length) return `<div class="empty-state">Bu karta bağlı PDF yok.</div>`;
+  return `<div class="compact-list">${files
+    .map(
+      (file) => `
+        <article class="compact-item">
+          <div><b>${escapeHtml(file.file_name)}</b><span>${formatDate(file.uploaded_at)} · ${formatNumber(Math.ceil(Number(file.file_size || 0) / 1024))} KB</span></div>
+          <a class="ghost link-button" href="/api/attachments/${file.id}" target="_blank" rel="noopener">Aç</a>
+        </article>
+      `
+    )
+    .join("")}</div>`;
+}
+
+function openAccountSummary(kind, row) {
+  if (!row) return;
+  const movements = movementsFor(kind, row);
+  const totals = movementTotals(movements);
+  const title = kind === "employee" ? "Personel cari özeti" : "Cari özeti";
+  const name = accountDisplayName(kind, row);
+  openActionModal(
+    title,
+    name,
+    `
+      <div class="ledger-actions">
+        <button class="ghost" data-account-action="opening_balance">Açılış</button>
+        <button class="ghost" data-account-action="debit_note">Borç Dekontu</button>
+        <button class="ghost" data-account-action="credit_note">Alacak Dekontu</button>
+        <button class="ghost" data-upload-pdf>PDF Yükle</button>
+      </div>
+      <div class="result-grid ledger-summary">
+        <div><span>Borç</span><b>${formatMoney(totals.debit)}</b></div>
+        <div><span>Alacak</span><b>${formatMoney(totals.credit)}</b></div>
+        <div><span>Bakiye</span><b>${formatMoney(totals.balance)}</b></div>
+        <div><span>PDF</span><b>${formatNumber(attachmentsFor(kind, row.id).length)}</b></div>
+      </div>
+      <div class="ledger-table-wrap">
+        <table class="ledger-table">
+          <thead><tr><th>Tarih</th><th>Hareket</th><th>Belge</th><th>Açıklama</th><th>Borç</th><th>Alacak</th><th>Bakiye</th></tr></thead>
+          <tbody>${ledgerRowsHtml(movements)}</tbody>
+        </table>
+      </div>
+      <section class="attachment-panel">
+        <div class="block-head"><h2>Ekli Belgeler</h2></div>
+        ${attachmentListHtml(kind, row.id)}
+      </section>
+    `
+  );
+  document.querySelectorAll("[data-account-action]").forEach((button) => {
+    button.addEventListener("click", () => openMovementModal(kind, row, button.dataset.accountAction));
+  });
+  document.querySelector("[data-upload-pdf]")?.addEventListener("click", () => openAttachmentModal(kind, row));
+}
+
+function openMovementModal(kind, row, movementType = "debit_note") {
+  if (!row) return;
+  const defaultDirection = movementType === "credit_note" || movementType === "opening_balance" ? "credit" : "debit";
+  openActionModal(
+    movementTypeLabel(movementType),
+    accountDisplayName(kind, row),
+    `
+      <form id="accountMovementForm" class="record-form">
+        <input type="hidden" name="accountKind" value="${escapeHtml(kind)}" />
+        <input type="hidden" name="accountId" value="${escapeHtml(row.id)}" />
+        <input type="hidden" name="movementType" value="${escapeHtml(movementType)}" />
+        <div class="record-grid">
+          <label>Tarih<input name="movementDate" type="date" value="${new Date().toISOString().slice(0, 10)}" required /></label>
+          <label>Yön
+            <select name="direction">
+              <option value="debit" ${defaultDirection === "debit" ? "selected" : ""}>Borç</option>
+              <option value="credit" ${defaultDirection === "credit" ? "selected" : ""}>Alacak</option>
+            </select>
+          </label>
+          <label>Tutar<input name="amount" type="number" min="0.01" step="0.01" required /></label>
+          <label>Belge No<input name="documentNo" /></label>
+        </div>
+        <label>Açıklama<input name="description" placeholder="${escapeHtml(movementTypeLabel(movementType))}" /></label>
+        <footer class="modal-actions">
+          <button type="button" class="ghost" id="cancelActionModal">Vazgeç</button>
+          <button type="submit" class="primary">Kaydet</button>
+        </footer>
+      </form>
+    `
+  );
+  document.querySelector("#cancelActionModal").addEventListener("click", () => openAccountSummary(kind, row));
+  document.querySelector("#accountMovementForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector("button[type='submit']");
+    const payload = Object.fromEntries(new FormData(form).entries());
+    button.disabled = true;
+    button.textContent = "Kaydediliyor";
+    try {
+      const response = await fetch("/api/account-movements", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const result = await readJsonResponse(response, "Hareket kaydedilemedi");
+      state.payload = result.dashboard;
+      renderAll();
+      const fresh = (kind === "employee" ? state.payload.employees : state.payload.partners).find((item) => Number(item.id) === Number(row.id));
+      openAccountSummary(kind, fresh || row);
+      showToast("Hareket kaydedildi");
+    } catch (error) {
+      showToast(error.message, false);
+    } finally {
+      button.disabled = false;
+      button.textContent = "Kaydet";
+    }
+  });
+}
+
+function openAttachmentModal(kind, row) {
+  if (!row) return;
+  openActionModal(
+    "PDF yükle",
+    accountDisplayName(kind, row),
+    `
+      <form id="attachmentForm" class="record-form">
+        <input type="hidden" name="entityType" value="${escapeHtml(kind)}" />
+        <input type="hidden" name="entityId" value="${escapeHtml(row.id)}" />
+        <label>PDF dosyası<input name="file" type="file" accept=".pdf,application/pdf" required /></label>
+        <footer class="modal-actions">
+          <button type="button" class="ghost" id="cancelActionModal">Vazgeç</button>
+          <button type="submit" class="primary">Yükle</button>
+        </footer>
+      </form>
+    `
+  );
+  document.querySelector("#cancelActionModal").addEventListener("click", () => openAccountSummary(kind, row));
+  document.querySelector("#attachmentForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector("button[type='submit']");
+    const formData = new FormData(form);
+    button.disabled = true;
+    button.textContent = "Yükleniyor";
+    try {
+      const response = await fetch("/api/attachments", { method: "POST", body: formData });
+      const result = await readJsonResponse(response, "PDF yüklenemedi");
+      state.payload = result.dashboard;
+      renderAll();
+      const fresh = (kind === "employee" ? state.payload.employees : state.payload.partners).find((item) => Number(item.id) === Number(row.id));
+      openAccountSummary(kind, fresh || row);
+      showToast("PDF karta eklendi");
+    } catch (error) {
+      showToast(error.message, false);
+    } finally {
+      button.disabled = false;
+      button.textContent = "Yükle";
+    }
+  });
+}
+
 function runValidation() {
   const controls = state.payload?.controls || [];
   const risky = controls.filter((control) => Number(control.count || 0) > 0);
@@ -946,6 +1313,56 @@ async function saveBankMatch(event) {
   }
 }
 
+function openBankTransferModal(row = null) {
+  const defaultAmount = row ? Math.abs(Number(row.net_amount || 0)) : "";
+  openActionModal(
+    "Virman fişi",
+    row ? `${formatDate(row.transaction_date)} · ${formatMoney(row.net_amount)}` : "Banka hesapları arası transfer kaydı.",
+    `
+      <form id="bankTransferForm" class="record-form">
+        <input type="hidden" name="sourceBankLineId" value="${escapeHtml(row?.id || "")}" />
+        <div class="record-grid">
+          <label>Tarih<input name="transferDate" type="date" value="${new Date().toISOString().slice(0, 10)}" required /></label>
+          <label>Tutar<input name="amount" type="number" min="0.01" step="0.01" value="${escapeHtml(defaultAmount)}" required /></label>
+          <label>Çıkış hesabı<input name="fromAccountCode" placeholder="102.01" required /></label>
+          <label>Giriş hesabı<input name="toAccountCode" placeholder="102.02" required /></label>
+        </div>
+        <label>Açıklama<input name="description" value="${escapeHtml(row?.transaction_type || "")}" placeholder="Banka hesapları arası virman" /></label>
+        <footer class="modal-actions">
+          <button type="button" class="ghost" id="cancelActionModal">Vazgeç</button>
+          <button type="submit" class="primary">Fişi Kaydet</button>
+        </footer>
+      </form>
+    `
+  );
+  document.querySelector("#cancelActionModal").addEventListener("click", closeActionModal);
+  document.querySelector("#bankTransferForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector("button[type='submit']");
+    const payload = Object.fromEntries(new FormData(form).entries());
+    button.disabled = true;
+    button.textContent = "Kaydediliyor";
+    try {
+      const response = await fetch("/api/bank/transfer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const result = await readJsonResponse(response, "Virman fişi kaydedilemedi");
+      state.payload = result.dashboard;
+      renderAll();
+      closeActionModal();
+      showToast("Virman fişi kaydedildi");
+    } catch (error) {
+      showToast(error.message, false);
+    } finally {
+      button.disabled = false;
+      button.textContent = "Fişi Kaydet";
+    }
+  });
+}
+
 function focusImport() {
   activateTab("import");
   document.querySelector("#fileInput")?.focus();
@@ -953,18 +1370,34 @@ function focusImport() {
 }
 
 function downloadTemplate() {
-  const csv = [
-    "Tip,Cari,Ad Soyad,Fatura No,Tarih,Vade,Genel Toplam,Odenen,Maas,Avans,Santiye",
-    "Fatura,ABC Tedarik,,FTR-001,2026-07-30,2026-08-15,10000,0,,,Merkez",
-    "Personel,,Ali Veli,,,,,30000,5000,Merkez",
-  ].join("\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(blob);
-  link.download = "erp_import_sablonu.csv";
-  link.click();
-  URL.revokeObjectURL(link.href);
+  downloadCsv("erp_import_sablonu.csv", [
+    ["Tip", "Cari", "Ad Soyad", "Fatura No", "Tarih", "Vade", "Genel Toplam", "Ödenen", "Maaş", "Avans", "Şantiye"],
+    ["Fatura", "ABC Tedarik", "", "FTR-001", "2026-07-30", "2026-08-15", "10000", "0", "", "", "Merkez"],
+    ["Personel", "", "Ali Veli", "", "", "", "", "", "30000", "5000", "Merkez"],
+  ]);
   showToast("Şablon indirildi");
+}
+
+function exportReport(kind) {
+  const rows =
+    kind === "partners"
+      ? state.payload?.partners || []
+      : [
+          state.payload?.reports || {},
+          ...(state.payload?.controls || []).map((item) => ({
+            name: item.name,
+            count: item.count,
+            owner: item.owner,
+            action: item.action,
+          })),
+        ];
+  if (!rows.length) {
+    showToast("Dışa aktarılacak rapor verisi yok.", false);
+    return;
+  }
+  const columns = Object.keys(rows[0] || {});
+  downloadCsv(`rapor-${kind}.csv`, [columns, ...rows.map((row) => columns.map((key) => row[key]))]);
+  showToast("Rapor dışa aktarıldı");
 }
 
 const bulkToolbarConfig = {
@@ -976,6 +1409,7 @@ const bulkToolbarConfig = {
   ],
   bank: [
     ["bankMatch", "Eşleştir"],
+    ["bankTransfer", "Virman fişi"],
     ["bankExpense", "Masraf yaz"],
     ["export", "Dışa aktar"],
   ],
@@ -990,11 +1424,17 @@ const bulkToolbarConfig = {
   ],
   partners: [
     ["partnerSummary", "Cari özeti"],
+    ["partnerOpening", "Açılış"],
+    ["partnerDebit", "Borç dekontu"],
+    ["partnerCredit", "Alacak dekontu"],
+    ["partnerPdf", "PDF yükle"],
     ["export", "Dışa aktar"],
   ],
   employees: [
+    ["employeeSummary", "Personel özeti"],
     ["bulkAdvance", "Avans gir"],
     ["bulkSite", "Şantiye ata"],
+    ["employeePdf", "PDF yükle"],
     ["export", "Dışa aktar"],
   ],
   vat: [
@@ -1096,6 +1536,16 @@ function requireSelection(list) {
   return rows;
 }
 
+function requireSingleSelection(list) {
+  const rows = requireSelection(list);
+  if (!rows) return null;
+  if (rows.length !== 1) {
+    showToast("Bu işlem için tek kayıt seç.", false);
+    return null;
+  }
+  return rows[0];
+}
+
 async function postBulk(url, payload, successMessage) {
   const response = await fetch(url, {
     method: "POST",
@@ -1131,20 +1581,7 @@ function exportRows(list) {
   const rows = requireSelection(list);
   if (!rows) return;
   const columns = Object.keys(rows[0] || {});
-  const csv = [
-    columns.join(","),
-    ...rows.map((row) =>
-      columns
-        .map((key) => `"${String(row[key] ?? "").replaceAll('"', '""')}"`)
-        .join(",")
-    ),
-  ].join("\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(blob);
-  link.download = `${list}-secili-kayitlar.csv`;
-  link.click();
-  URL.revokeObjectURL(link.href);
+  downloadCsv(`${list}-secili-kayitlar.csv`, [columns, ...rows.map((row) => columns.map((key) => row[key]))]);
   showToast("Seçili kayıtlar dışa aktarıldı");
 }
 
@@ -1283,16 +1720,44 @@ function openSimpleSummary(list, title) {
   );
 }
 
+function openSelectedAccountSummary(kind, list) {
+  const row = requireSingleSelection(list);
+  if (!row) return;
+  openAccountSummary(kind, row);
+}
+
+function openSelectedMovement(kind, list, movementType) {
+  const row = requireSingleSelection(list);
+  if (!row) return;
+  openMovementModal(kind, row, movementType);
+}
+
+function openSelectedAttachment(kind, list) {
+  const row = requireSingleSelection(list);
+  if (!row) return;
+  openAttachmentModal(kind, row);
+}
+
 function handleBulkAction(list, action) {
   if (action === "paymentRun") return openBulkPaymentRun(list);
   if (action === "markPaid") return markSelectedPaid(list);
   if (action === "voucher") return openBulkVoucher(list);
   if (action === "bankMatch") return openBulkBankMatch(list);
+  if (action === "bankTransfer") {
+    const row = requireSingleSelection(list);
+    return row ? openBankTransferModal(row) : undefined;
+  }
   if (action === "bankExpense") return openBulkBankMatch(list, true);
   if (action === "bulkAdvance") return openBulkAdvance();
   if (action === "bulkSite") return openBulkEmployeeSite();
+  if (action === "employeeSummary") return openSelectedAccountSummary("employee", list);
+  if (action === "employeePdf") return openSelectedAttachment("employee", list);
   if (action === "instrumentSummary") return openSimpleSummary(list, "Portföy özeti");
-  if (action === "partnerSummary") return openSimpleSummary(list, "Cari özeti");
+  if (action === "partnerSummary") return openSelectedAccountSummary("partner", list);
+  if (action === "partnerOpening") return openSelectedMovement("partner", list, "opening_balance");
+  if (action === "partnerDebit") return openSelectedMovement("partner", list, "debit_note");
+  if (action === "partnerCredit") return openSelectedMovement("partner", list, "credit_note");
+  if (action === "partnerPdf") return openSelectedAttachment("partner", list);
   if (action === "vatCheck") return runValidation();
   if (action === "export") return exportRows(list);
 }
@@ -1304,13 +1769,21 @@ function wireCommandButtons() {
   topButtons[2]?.addEventListener("click", () => openNewRecordModal());
 
   document.querySelector("#ap .page-head .primary")?.addEventListener("click", () => openNewRecordModal("invoice"));
+  document.querySelector("#bankTransferButton")?.addEventListener("click", () => openBankTransferModal());
   document.querySelector("#bank .page-head .primary")?.addEventListener("click", focusImport);
   document.querySelector("#payments .page-head .primary")?.addEventListener("click", () => openPaymentRun());
   document.querySelector("#partners .page-head .primary")?.addEventListener("click", () => openNewRecordModal("partner"));
   document.querySelector("#employees .page-head .primary")?.addEventListener("click", () => openNewRecordModal("employee"));
   document.querySelector("#tax .page-head .primary")?.addEventListener("click", runValidation);
   document.querySelector("#controls .page-head .primary")?.addEventListener("click", runValidation);
+  document.querySelector("#reports .page-head .primary")?.addEventListener("click", () => {
+    renderReports(state.payload || {});
+    showToast("Rapor yenilendi");
+  });
   document.querySelector("#import .page-head .ghost")?.addEventListener("click", downloadTemplate);
+  document.querySelectorAll("[data-report-export]").forEach((button) => {
+    button.addEventListener("click", () => exportReport(button.dataset.reportExport));
+  });
 
   document.querySelectorAll("#home .block-head .text-button").forEach((button) => {
     button.addEventListener("click", runValidation);
@@ -1330,6 +1803,7 @@ function renderAll() {
   renderPartners(payload.partners || []);
   renderEmployees(payload.employees || []);
   renderVat(payload.vatSummary || []);
+  renderReports(payload);
   renderImportInfo(payload);
   updateAllBulkToolbars();
 }

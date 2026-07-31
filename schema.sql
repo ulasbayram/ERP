@@ -48,6 +48,44 @@ CREATE TABLE IF NOT EXISTS business_partners (
   normalized_name TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS account_movements (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_kind TEXT NOT NULL,
+  account_id INTEGER NOT NULL,
+  movement_date TEXT NOT NULL,
+  movement_type TEXT NOT NULL,
+  direction TEXT NOT NULL,
+  amount REAL NOT NULL DEFAULT 0,
+  document_no TEXT,
+  description TEXT,
+  source_table TEXT,
+  source_id INTEGER,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS entity_attachments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity_type TEXT NOT NULL,
+  entity_id INTEGER NOT NULL,
+  file_name TEXT NOT NULL,
+  stored_name TEXT NOT NULL,
+  mime_type TEXT,
+  file_size INTEGER NOT NULL DEFAULT 0,
+  uploaded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS bank_transfer_vouchers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  transfer_date TEXT NOT NULL,
+  from_account_code TEXT NOT NULL,
+  to_account_code TEXT NOT NULL,
+  amount REAL NOT NULL DEFAULT 0,
+  description TEXT,
+  source_bank_line_id INTEGER,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (source_bank_line_id) REFERENCES bank_statement_lines(id)
+);
+
 CREATE TABLE IF NOT EXISTS employees (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   national_id_masked TEXT,

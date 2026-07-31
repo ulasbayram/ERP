@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Ulaş Bayram ERP</title>
-    <link rel="stylesheet" href="/styles.css?v=20260730-accounting" />
+    <link rel="stylesheet" href="/styles.css?v=20260731-ledger" />
   </head>
   <body>
     <div class="shell">
@@ -36,6 +36,7 @@
         <div class="nav-group">
           <span>Sistem</span>
           <button class="nav-item" data-tab="import">Import Center</button>
+          <button class="nav-item" data-tab="reports">Raporlama</button>
         </div>
       </aside>
 
@@ -152,7 +153,10 @@
               <h1>Banka Mutabakatı</h1>
               <p>Ekstre satırını cari, fatura, personel ödemesi veya gider hesabı ile eşleştir.</p>
             </div>
-            <button class="primary">Ekstre Yükle</button>
+            <div class="page-actions">
+              <button class="ghost" id="bankTransferButton">Virman Fişi</button>
+              <button class="primary">Ekstre Yükle</button>
+            </div>
           </div>
           <div class="reconcile-layout">
             <section class="block">
@@ -230,7 +234,7 @@
           </div>
           <div class="table-card">
             <table>
-              <thead><tr><th class="select-col"><input type="checkbox" data-select-all="partners" aria-label="Tüm carileri seç" /></th><th>Cari</th><th>Tip</th><th>Fatura</th><th>Toplam</th><th>Açık Bakiye</th></tr></thead>
+              <thead><tr><th class="select-col"><input type="checkbox" data-select-all="partners" aria-label="Tüm carileri seç" /></th><th>Cari</th><th>Tip</th><th>Fatura</th><th>Toplam</th><th>Açık Bakiye</th><th></th></tr></thead>
               <tbody id="partnerRows"></tbody>
             </table>
           </div>
@@ -327,6 +331,27 @@
             <pre id="lastImportLog" class="log"></pre>
           </section>
         </section>
+
+        <section id="reports" class="view">
+          <div class="page-head">
+            <div>
+              <h1>Raporlama</h1>
+              <p>Cari bakiyeler, personel ödeme yükü, banka mutabakatı ve belge takibi.</p>
+            </div>
+            <button class="primary">Raporu Yenile</button>
+          </div>
+          <div class="kpi-strip report-strip" id="reportKpis"></div>
+          <div class="layout-2">
+            <section class="block">
+              <div class="block-head"><h2>Cari Borç / Alacak Özeti</h2><button class="text-button" data-report-export="partners">Dışa aktar</button></div>
+              <div id="reportPartnerRows" class="compact-list"></div>
+            </section>
+            <section class="block">
+              <div class="block-head"><h2>Operasyon Raporları</h2><button class="text-button" data-report-export="operations">Dışa aktar</button></div>
+              <div id="reportOperationRows" class="compact-list"></div>
+            </section>
+          </div>
+        </section>
       </main>
     </div>
     <div class="modal-backdrop" id="advanceModal" hidden>
@@ -385,6 +410,6 @@
         </form>
       </section>
     </div>
-    <script src="/app.js?v=20260730-accounting"></script>
+    <script src="/app.js?v=20260731-ledger"></script>
   </body>
 </html>

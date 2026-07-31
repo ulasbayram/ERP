@@ -3,6 +3,7 @@ __pycache__/
 .env
 data/erp.sqlite3
 data/uploads/
+data/attachments/
 data/samples/
 data/backups/
 .docker-tmp/
