@@ -130,8 +130,8 @@ function csvCell(value) {
 }
 
 function downloadCsv(filename, rows) {
-  const csv = rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
-  const blob = new Blob(["\ufeff", csv], { type: "text/csv;charset=utf-8" });
+  const csv = rows.map((row) => row.map(csvCell).join(";")).join("\r\n");
+  const blob = new Blob(["\ufeffsep=;\r\n", csv], { type: "text/csv;charset=utf-8" });
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
   link.download = filename;
