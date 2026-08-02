@@ -248,6 +248,13 @@ CREATE TABLE IF NOT EXISTS audit_events (
   entity_id TEXT,
   old_value TEXT,
   new_value TEXT,
+  ip_address TEXT,
+  user_agent TEXT,
+  request_method TEXT,
+  request_path TEXT,
+  previous_hash TEXT,
+  event_hash TEXT,
+  integrity_algorithm TEXT NOT NULL DEFAULT 'sha256-chain-v1',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (company_id) REFERENCES companies(id)
 );

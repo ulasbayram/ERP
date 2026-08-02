@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import cgi
+import contextvars
 import hashlib
 import hmac
 import json
@@ -41,6 +42,7 @@ OWNER_ROLE = "owner"
 ACCOUNTANT_ROLE = "accountant"
 LOG_VIEW_ROLES = {ADMIN_ROLE, OWNER_ROLE}
 ASSIGNABLE_ROLES = {ADMIN_ROLE, OWNER_ROLE, ACCOUNTANT_ROLE}
+REQUEST_CONTEXT = contextvars.ContextVar("request_context", default={})
 
 
 class CompanyAccessError(PermissionError):
@@ -252,6 +254,10 @@ def resolve_company_id(conn: sqlite3.Connection, user: dict, requested=None) -> 
     return user_company_id
 
 
+def has_requested_company(value) -> bool:
+    return parse_company_id(value) is not None
+
+
 def company_id_from_request(handler, payload: dict | None = None, form=None) -> int | None:
     if payload:
         found = parse_company_id(payload.get("companyId"))
@@ -275,10 +281,43 @@ def audit_event(
     old_value=None,
     new_value=None,
 ) -> None:
+    context = REQUEST_CONTEXT.get({}) or {}
+    created_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    old_payload = json.dumps(old_value, ensure_ascii=False, sort_keys=True) if isinstance(old_value, (dict, list)) else old_value
+    new_payload = json.dumps(new_value, ensure_ascii=False, sort_keys=True) if isinstance(new_value, (dict, list)) else new_value
+    previous = conn.execute(
+        "SELECT event_hash FROM audit_events WHERE event_hash IS NOT NULL ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    previous_hash = previous["event_hash"] if previous else None
+    canonical = json.dumps(
+        {
+            "company_id": company_id,
+            "actor": actor,
+            "action": action,
+            "entity_name": entity_name,
+            "entity_id": str(entity_id) if entity_id is not None else None,
+            "old_value": old_payload,
+            "new_value": new_payload,
+            "ip_address": context.get("ip_address"),
+            "user_agent": context.get("user_agent"),
+            "request_method": context.get("request_method"),
+            "request_path": context.get("request_path"),
+            "created_at": created_at,
+            "previous_hash": previous_hash,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    event_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     conn.execute(
         """
-        INSERT INTO audit_events(company_id, actor, action, entity_name, entity_id, old_value, new_value)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO audit_events(
+          company_id, actor, action, entity_name, entity_id, old_value, new_value,
+          ip_address, user_agent, request_method, request_path,
+          previous_hash, event_hash, integrity_algorithm, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             company_id,
@@ -286,8 +325,16 @@ def audit_event(
             action,
             entity_name,
             str(entity_id) if entity_id is not None else None,
-            json.dumps(old_value, ensure_ascii=False) if isinstance(old_value, (dict, list)) else old_value,
-            json.dumps(new_value, ensure_ascii=False) if isinstance(new_value, (dict, list)) else new_value,
+            old_payload,
+            new_payload,
+            context.get("ip_address"),
+            context.get("user_agent"),
+            context.get("request_method"),
+            context.get("request_path"),
+            previous_hash,
+            event_hash,
+            "sha256-chain-v1",
+            created_at,
         ),
     )
 
@@ -395,6 +442,24 @@ def should_send_secure_cookie(headers) -> bool:
         or '"scheme":"https"' in cf_visitor
         or "'scheme':'https'" in cf_visitor
     )
+
+
+def client_ip_from_headers(headers, fallback: str = "") -> str:
+    return (
+        normalize_text(headers.get("CF-Connecting-IP"))
+        or normalize_text(headers.get("X-Real-IP"))
+        or normalize_text(headers.get("X-Forwarded-For")).split(",", 1)[0].strip()
+        or fallback
+    )
+
+
+def request_context_from_handler(handler) -> dict:
+    return {
+        "ip_address": client_ip_from_headers(handler.headers, handler.client_address[0] if handler.client_address else ""),
+        "user_agent": normalize_text(handler.headers.get("User-Agent"))[:400],
+        "request_method": handler.command,
+        "request_path": urlparse(handler.path).path,
+    }
 
 
 def init_db() -> None:
@@ -542,6 +607,19 @@ def ensure_schema_migrations(conn: sqlite3.Connection) -> None:
             conn.execute(f"UPDATE {table} SET company_id = ? WHERE company_id IS NULL", (default_company_id,))
     conn.execute("CREATE INDEX IF NOT EXISTS idx_project_sites_company_name ON project_sites(company_id, name)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_business_partners_company_name ON business_partners(company_id, normalized_name)")
+    audit_columns = {row["name"] for row in conn.execute("PRAGMA table_info(audit_events)")}
+    audit_migrations = {
+        "ip_address": "ALTER TABLE audit_events ADD COLUMN ip_address TEXT",
+        "user_agent": "ALTER TABLE audit_events ADD COLUMN user_agent TEXT",
+        "request_method": "ALTER TABLE audit_events ADD COLUMN request_method TEXT",
+        "request_path": "ALTER TABLE audit_events ADD COLUMN request_path TEXT",
+        "previous_hash": "ALTER TABLE audit_events ADD COLUMN previous_hash TEXT",
+        "event_hash": "ALTER TABLE audit_events ADD COLUMN event_hash TEXT",
+        "integrity_algorithm": "ALTER TABLE audit_events ADD COLUMN integrity_algorithm TEXT NOT NULL DEFAULT 'sha256-chain-v1'",
+    }
+    for column, statement in audit_migrations.items():
+        if column not in audit_columns:
+            conn.execute(statement)
     conn.execute(
         """
         INSERT INTO account_movements(
@@ -993,6 +1071,72 @@ def import_workbook(path: Path, original_name: str, company_id: int, actor: str 
         audit_event(conn, company_id, actor, "import_workbook", "import_batches", None, None, summary)
 
     return summary
+
+
+def empty_operational_payload(user: dict, conn: sqlite3.Connection) -> dict:
+    companies = list_companies(conn)
+    users = list_users(conn)
+    recent_logs = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT a.id, a.company_id, c.name AS company_name, a.actor, a.action, a.entity_name,
+                   a.entity_id, a.ip_address, a.request_path, a.event_hash, a.created_at
+            FROM audit_events a
+            LEFT JOIN companies c ON c.id = a.company_id
+            ORDER BY a.created_at DESC, a.id DESC
+            LIMIT 120
+            """
+        )
+    ]
+    active_companies = sum(1 for company in companies if company.get("status") != "archived")
+    archived_companies = sum(1 for company in companies if company.get("status") == "archived")
+    pending_users = sum(1 for item in users if not item.get("company_id") and item.get("role") != ADMIN_ROLE)
+    return {
+        "kpis": {},
+        "workQueue": [],
+        "controls": [],
+        "latestImport": None,
+        "recentInvoices": [],
+        "recentBankLines": [],
+        "payables": [],
+        "partners": [],
+        "employees": [],
+        "paymentInstruments": [],
+        "vatSummary": [],
+        "bankGroups": [],
+        "projectSites": [],
+        "accountMovements": [],
+        "attachments": [],
+        "transferVouchers": [],
+        "employeeAdvances": [],
+        "employeeOvertime": [],
+        "auditLogs": recent_logs,
+        "companies": companies,
+        "adminUsers": users,
+        "selectedCompany": None,
+        "adminOverview": {
+            "companyCount": len(companies),
+            "activeCompanyCount": active_companies,
+            "archivedCompanyCount": archived_companies,
+            "userCount": len(users),
+            "pendingUserCount": pending_users,
+            "recentLogCount": len(recent_logs),
+        },
+        "permissions": {
+            "role": user.get("role"),
+            "canViewLogs": True,
+            "canSwitchCompany": True,
+            "canManageUsers": True,
+        },
+        "reports": {},
+    }
+
+
+def admin_overview_payload(user: dict) -> dict:
+    init_db()
+    with connect() as conn:
+        return empty_operational_payload(user, conn)
 
 
 def dashboard_payload(user: dict | None = None, company_id: int | None = None) -> dict:
@@ -1538,10 +1682,13 @@ class ERPHandler(SimpleHTTPRequestHandler):
         self.wfile.write(encoded)
 
     def selected_company_id(self, user: dict, requested=None) -> int:
+        if user.get("role") == ADMIN_ROLE and not has_requested_company(requested):
+            raise CompanyAccessError("Admin işlem yapmak için önce firma seçmeli.")
         with connect() as conn:
             return resolve_company_id(conn, user, requested)
 
     def do_GET(self):
+        REQUEST_CONTEXT.set(request_context_from_handler(self))
         parsed = urlparse(self.path)
         if parsed.path in ("/login", "/login.html"):
             if self.current_user():
@@ -1566,9 +1713,15 @@ class ERPHandler(SimpleHTTPRequestHandler):
                 return
             with connect() as conn:
                 try:
-                    company_id = resolve_company_id(conn, user, parse_qs(parsed.query).get("companyId", [None])[0])
-                    selected_company = conn.execute("SELECT id, name, tax_number, status FROM companies WHERE id = ?", (company_id,)).fetchone()
-                    companies = list_companies(conn) if user.get("role") == ADMIN_ROLE else ([dict(selected_company)] if selected_company else [])
+                    requested_company_id = parse_qs(parsed.query).get("companyId", [None])[0]
+                    if user.get("role") == ADMIN_ROLE and not has_requested_company(requested_company_id):
+                        company_id = None
+                        selected_company = None
+                        companies = list_companies(conn)
+                    else:
+                        company_id = resolve_company_id(conn, user, requested_company_id)
+                        selected_company = conn.execute("SELECT id, name, tax_number, status FROM companies WHERE id = ?", (company_id,)).fetchone()
+                        companies = list_companies(conn) if user.get("role") == ADMIN_ROLE else ([dict(selected_company)] if selected_company else [])
                 except CompanyAccessError:
                     company_id = None
                     selected_company = None
@@ -1596,6 +1749,12 @@ class ERPHandler(SimpleHTTPRequestHandler):
                 return
             requested_company_id = parse_qs(parsed.query).get("companyId", [None])[0] or company_id_from_request(self)
             try:
+                if user.get("role") == ADMIN_ROLE and not has_requested_company(requested_company_id):
+                    self.send_json(admin_overview_payload(user))
+                    return
+                with connect() as conn:
+                    viewed_company_id = resolve_company_id(conn, user, requested_company_id)
+                    audit_event(conn, viewed_company_id, user["email"], "view_company_dashboard", "companies", viewed_company_id)
                 self.send_json(dashboard_payload(user, requested_company_id))
             except CompanyAccessError as exc:
                 self.send_json({"error": str(exc), "companyAssigned": False}, 403)
@@ -1643,6 +1802,7 @@ class ERPHandler(SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def do_POST(self):
+        REQUEST_CONTEXT.set(request_context_from_handler(self))
         parsed = urlparse(self.path)
         if not same_origin_allowed(self.headers):
             self.send_json({"error": "İstek kaynağı reddedildi."}, 403)
@@ -1724,6 +1884,7 @@ class ERPHandler(SimpleHTTPRequestHandler):
                         (email,),
                     ).fetchone()
                     if not row or not verify_password(password, row["password_hash"], row["password_salt"], int(row["password_iterations"])):
+                        audit_event(conn, None, email or "unknown", "login_failed", "auth_sessions", None, None, {"email": email})
                         self.send_json({"error": "E-posta veya parola hatalı."}, 401)
                         return
                     token = create_session(
@@ -1733,6 +1894,7 @@ class ERPHandler(SimpleHTTPRequestHandler):
                         self.client_address[0],
                     )
                     conn.execute("UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = ?", (row["id"],))
+                    audit_event(conn, parse_company_id(row["company_id"]), row["email"], "login_success", "auth_sessions", row["id"], None, {"role": row["role"]})
                 body = json.dumps({"ok": True}, ensure_ascii=False).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json; charset=utf-8")

@@ -11,6 +11,7 @@ const state = {
   user: null,
   companies: [],
   companyId: null,
+  adminCompanyId: null,
   permissions: {},
   query: "",
   selectedPayable: null,
@@ -1139,8 +1140,9 @@ function renderCompanySelector() {
   const select = document.querySelector("#companySelect");
   if (!select) return;
   const companies = state.companies.length ? state.companies : state.payload?.companies || [];
-  const selected = state.companyId || state.payload?.selectedCompany?.id || companies[0]?.id;
-  select.innerHTML = companies
+  const selected = state.companyId || state.payload?.selectedCompany?.id || null;
+  const adminOption = state.permissions?.canManageUsers ? `<option value="" ${state.companyId ? "" : "selected"}>Admin Paneli</option>` : "";
+  select.innerHTML = adminOption + companies
     .map((company) => `<option value="${company.id}" ${Number(company.id) === Number(selected) ? "selected" : ""}>${escapeHtml(company.name)}${company.status === "archived" ? " (Arşiv)" : ""}</option>`)
     .join("");
   select.disabled = !state.permissions?.canSwitchCompany;
@@ -1202,9 +1204,10 @@ function renderAuditLogs(rows = []) {
 function wireCompanySelector() {
   const select = document.querySelector("#companySelect");
   select?.addEventListener("change", async () => {
-    state.companyId = Number(select.value);
+    state.companyId = select.value ? Number(select.value) : null;
     setStatus("Firma değiştiriliyor");
     await loadDashboard();
+    if (!state.companyId && state.permissions?.canManageUsers) activateTab("admin");
   });
   document.querySelector("#createCompanyButton")?.addEventListener("click", () => {
     openActionModal(
@@ -1255,12 +1258,17 @@ function renderAdminDashboard() {
   }
   const companies = state.payload?.companies || state.companies || [];
   const users = state.payload?.adminUsers || [];
+  const overview = state.payload?.adminOverview || {};
+  const selectedAdminCompanyId = state.adminCompanyId || state.companyId || null;
+  const visibleUsers = selectedAdminCompanyId
+    ? users.filter((user) => Number(user.company_id) === Number(selectedAdminCompanyId) || (!user.company_id && user.role !== "admin"))
+    : users;
   const companyOptions = (selectedId) =>
     `<option value="">Atama bekliyor</option>${companies
       .map((company) => `<option value="${company.id}" ${Number(company.id) === Number(selectedId) ? "selected" : ""}>${escapeHtml(company.name)}</option>`)
       .join("")}`;
   userBody.innerHTML =
-    users
+    visibleUsers
       .map(
         (user) => `
           <tr data-admin-user="${user.id}">
@@ -1283,10 +1291,17 @@ function renderAdminDashboard() {
       )
       .join("") || `<tr><td colspan="5" class="empty-state">Kullanıcı yok.</td></tr>`;
   companyBody.innerHTML =
+    `<div class="admin-overview">
+      <div><span>Firma</span><b>${formatNumber(overview.companyCount || companies.length)}</b></div>
+      <div><span>Aktif</span><b>${formatNumber(overview.activeCompanyCount || 0)}</b></div>
+      <div><span>Arşiv</span><b>${formatNumber(overview.archivedCompanyCount || 0)}</b></div>
+      <div><span>Atama bekleyen</span><b>${formatNumber(overview.pendingUserCount || 0)}</b></div>
+    </div>` +
     companies
       .map(
         (company) => `
-          <article class="compact-item admin-company-row" data-admin-company="${company.id}">
+          <article class="compact-item admin-company-row ${Number(company.id) === Number(selectedAdminCompanyId) ? "selected" : ""}" data-admin-company="${company.id}">
+            <button type="button" class="company-logo" data-manage-company="${company.id}" title="Firmayı yönet">${escapeHtml(companyInitials(company.name))}</button>
             <div>
               <input data-company-name value="${escapeHtml(company.name || "")}" />
               <input data-company-tax value="${escapeHtml(company.tax_number || "")}" placeholder="Vergi no" />
@@ -1296,6 +1311,7 @@ function renderAdminDashboard() {
                 <option value="active" ${company.status !== "archived" ? "selected" : ""}>Aktif</option>
                 <option value="archived" ${company.status === "archived" ? "selected" : ""}>Arşivli</option>
               </select>
+              <button type="button" class="ghost" data-open-company="${company.id}">Dashboard</button>
               <button type="button" class="ghost" data-save-company="${company.id}">Kaydet</button>
             </div>
           </article>
@@ -1305,9 +1321,32 @@ function renderAdminDashboard() {
   userBody.querySelectorAll("[data-save-user]").forEach((button) => {
     button.addEventListener("click", () => saveUserAssignment(button.dataset.saveUser));
   });
+  companyBody.querySelectorAll("[data-manage-company]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.adminCompanyId = Number(button.dataset.manageCompany);
+      renderAdminDashboard();
+    });
+  });
+  companyBody.querySelectorAll("[data-open-company]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      state.companyId = Number(button.dataset.openCompany);
+      await loadDashboard();
+      activateTab("home");
+    });
+  });
   companyBody.querySelectorAll("[data-save-company]").forEach((button) => {
     button.addEventListener("click", () => saveCompany(button.dataset.saveCompany));
   });
+}
+
+function companyInitials(name) {
+  return String(name || "?")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0])
+    .join("")
+    .toLocaleUpperCase("tr-TR") || "?";
 }
 
 async function saveUserAssignment(userId) {
@@ -2511,10 +2550,10 @@ function renderAll() {
   renderReports(payload);
   renderImportInfo(payload);
   renderAuditLogs(payload.auditLogs || []);
-  renderAdminDashboard();
   state.companies = payload.companies || state.companies;
   state.permissions = payload.permissions || state.permissions;
   state.companyId = payload.selectedCompany?.id || state.companyId;
+  renderAdminDashboard();
   renderCompanySelector();
   updateAllBulkToolbars();
 }
@@ -2551,7 +2590,7 @@ async function loadDashboard() {
   state.payload = await readJsonResponse(response, "Dashboard alınamadı");
   state.companies = state.payload.companies || state.companies;
   state.permissions = state.payload.permissions || state.permissions;
-  state.companyId = state.payload.selectedCompany?.id || state.companyId;
+  state.companyId = state.payload.selectedCompany?.id || null;
   renderAll();
   setStatus("Hazır");
 }
@@ -2567,7 +2606,7 @@ async function loadCurrentUser() {
   state.user = user;
   state.companies = payload.companies || [];
   state.permissions = payload.permissions || {};
-  state.companyId = payload.selectedCompany?.id || state.companies[0]?.id || null;
+  state.companyId = payload.selectedCompany?.id || null;
   renderCompanySelector();
   document.querySelector("#userChip").textContent = `${user.full_name} · ${user.role}`;
 }
@@ -2708,6 +2747,7 @@ async function boot() {
   try {
     await loadCurrentUser();
     await loadDashboard();
+    if (state.permissions?.canManageUsers && !state.companyId) activateTab("admin");
   } catch {
     setStatus("Backend yok", false);
   }
