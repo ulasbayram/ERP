@@ -55,9 +55,6 @@ CREATE TABLE IF NOT EXISTS business_partners (
   FOREIGN KEY (company_id) REFERENCES companies(id)
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_project_sites_company_name ON project_sites(company_id, name);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_business_partners_company_name ON business_partners(company_id, normalized_name);
-
 CREATE TABLE IF NOT EXISTS account_movements (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   company_id INTEGER,

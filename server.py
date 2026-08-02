@@ -540,6 +540,8 @@ def ensure_schema_migrations(conn: sqlite3.Connection) -> None:
             added_company_column = True
         if table != "users" or added_company_column:
             conn.execute(f"UPDATE {table} SET company_id = ? WHERE company_id IS NULL", (default_company_id,))
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_project_sites_company_name ON project_sites(company_id, name)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_business_partners_company_name ON business_partners(company_id, normalized_name)")
     conn.execute(
         """
         INSERT INTO account_movements(
