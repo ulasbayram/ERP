@@ -37,6 +37,8 @@
           <span>Sistem</span>
           <button class="nav-item" data-tab="import">Import Center</button>
           <button class="nav-item" data-tab="reports">Raporlama</button>
+          <button class="nav-item" data-tab="audit" data-permission="logs" hidden>İşlem Logları</button>
+          <button class="nav-item" data-tab="admin" data-permission="admin" hidden>Admin</button>
         </div>
       </aside>
 
@@ -45,8 +47,8 @@
           <div class="context">
             <label>
               Şirket
-              <select>
-                <option>Ulaş Bayram</option>
+              <select id="companySelect">
+                <option>Yükleniyor</option>
               </select>
             </label>
             <label>
@@ -351,6 +353,63 @@
             <section class="block">
               <div class="block-head"><h2>Operasyon Raporları</h2><button class="text-button" data-report-export="operations">Dışa aktar</button></div>
               <div id="reportOperationRows" class="compact-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="audit" class="view">
+          <div class="page-head">
+            <div>
+              <h1>İşlem Logları</h1>
+              <p>Seçili firmada hangi hesabın hangi finans hareketini yaptığını izle.</p>
+            </div>
+            <button class="primary" id="createCompanyButton" hidden>Firma Aç</button>
+          </div>
+          <div class="table-card">
+            <table>
+              <thead>
+                <tr>
+                  <th>Tarih</th>
+                  <th>Kullanıcı</th>
+                  <th>İşlem</th>
+                  <th>Kayıt</th>
+                  <th>Detay</th>
+                </tr>
+              </thead>
+              <tbody id="auditRows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="admin" class="view">
+          <div class="page-head">
+            <div>
+              <h1>Admin</h1>
+              <p>Firma kayıtları, kullanıcı rolleri ve firma bağlantıları.</p>
+            </div>
+            <button class="primary" id="adminCreateCompanyButton">Firma Aç</button>
+          </div>
+          <div class="layout-2">
+            <section class="block">
+              <div class="block-head"><h2>Kullanıcılar</h2><span>Firma ve rol ataması</span></div>
+              <div class="table-card flat">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Kullanıcı</th>
+                      <th>Firma</th>
+                      <th>Rol</th>
+                      <th>Durum</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="adminUserRows"></tbody>
+                </table>
+              </div>
+            </section>
+            <section class="block">
+              <div class="block-head"><h2>Firmalar</h2><span>Kayıtlı çalışma alanları</span></div>
+              <div id="adminCompanyRows" class="compact-list"></div>
             </section>
           </div>
         </section>

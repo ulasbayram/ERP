@@ -8,6 +8,10 @@ const number = new Intl.NumberFormat("tr-TR");
 
 const state = {
   payload: null,
+  user: null,
+  companies: [],
+  companyId: null,
+  permissions: {},
   query: "",
   selectedPayable: null,
   selectedEmployee: null,
@@ -20,6 +24,17 @@ const state = {
     employees: new Set(),
     vat: new Set(),
   },
+};
+
+const nativeFetch = window.fetch.bind(window);
+window.fetch = (input, init = {}) => {
+  const url = typeof input === "string" ? input : input?.url || "";
+  if (state.companyId && url.startsWith("/api/")) {
+    const headers = new Headers(init.headers || (typeof input !== "string" ? input.headers : undefined));
+    headers.set("X-Company-Id", String(state.companyId));
+    init = { ...init, headers };
+  }
+  return nativeFetch(input, init);
 };
 
 function formatMoney(value) {
@@ -1120,6 +1135,240 @@ function renderImportInfo(payload = {}) {
   }
 }
 
+function renderCompanySelector() {
+  const select = document.querySelector("#companySelect");
+  if (!select) return;
+  const companies = state.companies.length ? state.companies : state.payload?.companies || [];
+  const selected = state.companyId || state.payload?.selectedCompany?.id || companies[0]?.id;
+  select.innerHTML = companies
+    .map((company) => `<option value="${company.id}" ${Number(company.id) === Number(selected) ? "selected" : ""}>${escapeHtml(company.name)}${company.status === "archived" ? " (Arşiv)" : ""}</option>`)
+    .join("");
+  select.disabled = !state.permissions?.canSwitchCompany;
+  document.querySelectorAll('[data-permission="logs"]').forEach((item) => {
+    item.hidden = !state.permissions?.canViewLogs;
+  });
+  document.querySelectorAll('[data-permission="admin"]').forEach((item) => {
+    item.hidden = !state.permissions?.canManageUsers;
+  });
+  const createCompanyButton = document.querySelector("#createCompanyButton");
+  if (createCompanyButton) createCompanyButton.hidden = !state.permissions?.canSwitchCompany;
+}
+
+function roleLabel(value) {
+  const labels = {
+    admin: "Admin",
+    owner: "Şirket sahibi",
+    accountant: "Muhasebeci",
+  };
+  return labels[value] || value || "-";
+}
+
+function compactJson(value) {
+  if (!value) return "-";
+  try {
+    const parsed = JSON.parse(value);
+    return Object.entries(parsed)
+      .slice(0, 4)
+      .map(([key, item]) => `${key}: ${typeof item === "object" ? JSON.stringify(item) : item}`)
+      .join(" · ");
+  } catch {
+    return value;
+  }
+}
+
+function renderAuditLogs(rows = []) {
+  const body = document.querySelector("#auditRows");
+  if (!body) return;
+  if (!state.permissions?.canViewLogs) {
+    body.innerHTML = `<tr><td colspan="5" class="empty-state">Bu ekran için yetki gerekli.</td></tr>`;
+    return;
+  }
+  body.innerHTML =
+    rows
+      .map(
+        (row) => `
+          <tr>
+            <td>${formatDate(row.created_at)}</td>
+            <td>${escapeHtml(row.actor || "-")}</td>
+            <td>${escapeHtml(row.action || "-")}</td>
+            <td>${escapeHtml(row.entity_name || "-")} #${escapeHtml(row.entity_id || "-")}</td>
+            <td>${escapeHtml(compactJson(row.new_value || row.old_value))}</td>
+          </tr>
+        `
+      )
+      .join("") || `<tr><td colspan="5" class="empty-state">Bu firma için log yok.</td></tr>`;
+}
+
+function wireCompanySelector() {
+  const select = document.querySelector("#companySelect");
+  select?.addEventListener("change", async () => {
+    state.companyId = Number(select.value);
+    setStatus("Firma değiştiriliyor");
+    await loadDashboard();
+  });
+  document.querySelector("#createCompanyButton")?.addEventListener("click", () => {
+    openActionModal(
+      "Firma aç",
+      "Yeni firma ayrı muhasebe datası ile başlar.",
+      `
+        <form id="companyForm" class="record-form">
+          <label>Firma adı<input name="name" required /></label>
+          <label>Vergi no<input name="taxNumber" /></label>
+          <footer class="modal-actions">
+            <button type="button" class="ghost" id="cancelActionModal">Vazgeç</button>
+            <button type="submit" class="primary">Kaydet</button>
+          </footer>
+        </form>
+      `
+    );
+    document.querySelector("#cancelActionModal").addEventListener("click", closeActionModal);
+    document.querySelector("#companyForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const data = Object.fromEntries(new FormData(event.currentTarget).entries());
+      try {
+        const response = await fetch("/api/companies", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(data),
+        });
+        state.payload = (await readJsonResponse(response, "Firma oluşturulamadı")).dashboard;
+        state.companyId = state.payload?.selectedCompany?.id || state.companyId;
+        state.companies = state.payload?.companies || state.companies;
+        renderAll();
+        closeActionModal();
+        showToast("Firma oluşturuldu");
+      } catch (error) {
+        showToast(error.message, false);
+      }
+    });
+  });
+}
+
+function renderAdminDashboard() {
+  const userBody = document.querySelector("#adminUserRows");
+  const companyBody = document.querySelector("#adminCompanyRows");
+  if (!userBody || !companyBody) return;
+  if (!state.permissions?.canManageUsers) {
+    userBody.innerHTML = `<tr><td colspan="5" class="empty-state">Admin yetkisi gerekli.</td></tr>`;
+    companyBody.innerHTML = `<div class="empty-state">Admin yetkisi gerekli.</div>`;
+    return;
+  }
+  const companies = state.payload?.companies || state.companies || [];
+  const users = state.payload?.adminUsers || [];
+  const companyOptions = (selectedId) =>
+    `<option value="">Atama bekliyor</option>${companies
+      .map((company) => `<option value="${company.id}" ${Number(company.id) === Number(selectedId) ? "selected" : ""}>${escapeHtml(company.name)}</option>`)
+      .join("")}`;
+  userBody.innerHTML =
+    users
+      .map(
+        (user) => `
+          <tr data-admin-user="${user.id}">
+            <td>
+              <input data-user-full-name value="${escapeHtml(user.full_name || "")}" />
+              <input data-user-email type="email" value="${escapeHtml(user.email || "")}" />
+            </td>
+            <td><select data-user-company>${companyOptions(user.company_id)}</select></td>
+            <td>
+              <select data-user-role>
+                <option value="accountant" ${user.role === "accountant" ? "selected" : ""}>Muhasebeci</option>
+                <option value="owner" ${user.role === "owner" ? "selected" : ""}>Şirket sahibi</option>
+                <option value="admin" ${user.role === "admin" ? "selected" : ""}>Admin</option>
+              </select>
+            </td>
+            <td><label class="inline-check"><input type="checkbox" data-user-active ${Number(user.is_active) ? "checked" : ""} /> Aktif</label></td>
+            <td><button type="button" class="ghost" data-save-user="${user.id}">Kaydet</button></td>
+          </tr>
+        `
+      )
+      .join("") || `<tr><td colspan="5" class="empty-state">Kullanıcı yok.</td></tr>`;
+  companyBody.innerHTML =
+    companies
+      .map(
+        (company) => `
+          <article class="compact-item admin-company-row" data-admin-company="${company.id}">
+            <div>
+              <input data-company-name value="${escapeHtml(company.name || "")}" />
+              <input data-company-tax value="${escapeHtml(company.tax_number || "")}" placeholder="Vergi no" />
+            </div>
+            <div class="admin-row-actions">
+              <select data-company-status>
+                <option value="active" ${company.status !== "archived" ? "selected" : ""}>Aktif</option>
+                <option value="archived" ${company.status === "archived" ? "selected" : ""}>Arşivli</option>
+              </select>
+              <button type="button" class="ghost" data-save-company="${company.id}">Kaydet</button>
+            </div>
+          </article>
+        `
+      )
+      .join("") || `<div class="empty-state">Firma yok.</div>`;
+  userBody.querySelectorAll("[data-save-user]").forEach((button) => {
+    button.addEventListener("click", () => saveUserAssignment(button.dataset.saveUser));
+  });
+  companyBody.querySelectorAll("[data-save-company]").forEach((button) => {
+    button.addEventListener("click", () => saveCompany(button.dataset.saveCompany));
+  });
+}
+
+async function saveUserAssignment(userId) {
+  const row = document.querySelector(`[data-admin-user="${userId}"]`);
+  if (!row) return;
+  const payload = {
+    userId: Number(userId),
+    fullName: row.querySelector("[data-user-full-name]").value,
+    email: row.querySelector("[data-user-email]").value,
+    companyId: row.querySelector("[data-user-company]").value || null,
+    role: row.querySelector("[data-user-role]").value,
+    isActive: row.querySelector("[data-user-active]").checked,
+  };
+  try {
+    const response = await fetch("/api/admin/users/assign", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    state.payload = (await readJsonResponse(response, "Kullanıcı güncellenemedi")).dashboard;
+    state.companies = state.payload?.companies || state.companies;
+    renderAll();
+    showToast("Kullanıcı yetkisi güncellendi");
+  } catch (error) {
+    showToast(error.message, false);
+  }
+}
+
+async function saveCompany(companyId) {
+  const row = document.querySelector(`[data-admin-company="${companyId}"]`);
+  if (!row) return;
+  const payload = {
+    companyId: Number(companyId),
+    name: row.querySelector("[data-company-name]").value,
+    taxNumber: row.querySelector("[data-company-tax]").value,
+    status: row.querySelector("[data-company-status]").value,
+  };
+  try {
+    const response = await fetch("/api/admin/companies/update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    state.payload = (await readJsonResponse(response, "Firma güncellenemedi")).dashboard;
+    state.companyId = state.payload?.selectedCompany?.id || state.companyId;
+    state.companies = state.payload?.companies || state.companies;
+    renderAll();
+    showToast("Firma güncellendi");
+  } catch (error) {
+    showToast(error.message, false);
+  }
+}
+
+function openCreateCompanyModal() {
+  document.querySelector("#createCompanyButton")?.click();
+}
+
+function wireAdminDashboard() {
+  document.querySelector("#adminCreateCompanyButton")?.addEventListener("click", openCreateCompanyModal);
+}
+
 function activeTab() {
   return document.querySelector(".view.active")?.id || "home";
 }
@@ -1415,7 +1664,7 @@ function attachmentListHtml(kind, id) {
       (file) => `
         <article class="compact-item">
           <div><b>${escapeHtml(file.file_name)}</b><span>${formatDate(file.uploaded_at)} · ${formatNumber(Math.ceil(Number(file.file_size || 0) / 1024))} KB</span></div>
-          <a class="ghost link-button" href="/api/attachments/${file.id}" target="_blank" rel="noopener">Aç</a>
+          <a class="ghost link-button" href="/api/attachments/${file.id}?companyId=${state.companyId || ""}" target="_blank" rel="noopener">Aç</a>
         </article>
       `
     )
@@ -2261,6 +2510,12 @@ function renderAll() {
   renderVat(payload.vatSummary || []);
   renderReports(payload);
   renderImportInfo(payload);
+  renderAuditLogs(payload.auditLogs || []);
+  renderAdminDashboard();
+  state.companies = payload.companies || state.companies;
+  state.permissions = payload.permissions || state.permissions;
+  state.companyId = payload.selectedCompany?.id || state.companyId;
+  renderCompanySelector();
   updateAllBulkToolbars();
 }
 
@@ -2270,7 +2525,33 @@ async function loadDashboard() {
     window.location.href = "/login";
     return;
   }
+  if (response.status === 403) {
+    const payload = await response.json().catch(() => ({ error: "Bu hesap için firma ataması gerekli." }));
+    state.payload = {
+      kpis: {},
+      workQueue: [],
+      bankGroups: [],
+      controls: [],
+      payables: [],
+      recentBankLines: [],
+      paymentInstruments: [],
+      partners: [],
+      employees: [],
+      vatSummary: [],
+      reports: {},
+      auditLogs: [],
+      companies: state.companies,
+      permissions: state.permissions,
+      selectedCompany: null,
+    };
+    renderAll();
+    setStatus(payload.error || "Bu hesap için firma ataması gerekli.", false);
+    return;
+  }
   state.payload = await readJsonResponse(response, "Dashboard alınamadı");
+  state.companies = state.payload.companies || state.companies;
+  state.permissions = state.payload.permissions || state.permissions;
+  state.companyId = state.payload.selectedCompany?.id || state.companyId;
   renderAll();
   setStatus("Hazır");
 }
@@ -2283,10 +2564,17 @@ async function loadCurrentUser() {
   }
   const payload = await readJsonResponse(response, "Kullanıcı bilgisi alınamadı");
   const user = payload.user;
+  state.user = user;
+  state.companies = payload.companies || [];
+  state.permissions = payload.permissions || {};
+  state.companyId = payload.selectedCompany?.id || state.companies[0]?.id || null;
+  renderCompanySelector();
   document.querySelector("#userChip").textContent = `${user.full_name} · ${user.role}`;
 }
 
 function activateTab(tab) {
+  if (tab === "audit" && !state.permissions?.canViewLogs) tab = "home";
+  if (tab === "admin" && !state.permissions?.canManageUsers) tab = "home";
   document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.tab === tab));
   document.querySelectorAll(".view").forEach((view) => view.classList.toggle("active", view.id === tab));
 }
@@ -2410,6 +2698,8 @@ async function boot() {
   wireNavigation();
   wireSearch();
   wireCommandButtons();
+  wireCompanySelector();
+  wireAdminDashboard();
   wireBulkToolbars();
   wireUpload();
   wireLogout();
