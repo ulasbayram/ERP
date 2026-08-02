@@ -105,6 +105,30 @@ CREATE TABLE IF NOT EXISTS employees (
   FOREIGN KEY (project_site_id) REFERENCES project_sites(id)
 );
 
+CREATE TABLE IF NOT EXISTS employee_advances (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  employee_id INTEGER NOT NULL,
+  advance_date TEXT NOT NULL,
+  period TEXT NOT NULL,
+  amount REAL NOT NULL DEFAULT 0,
+  note TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (employee_id) REFERENCES employees(id)
+);
+
+CREATE TABLE IF NOT EXISTS employee_overtime_entries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  employee_id INTEGER NOT NULL,
+  overtime_date TEXT NOT NULL,
+  period TEXT NOT NULL,
+  hours REAL NOT NULL DEFAULT 0,
+  hourly_rate REAL NOT NULL DEFAULT 0,
+  amount REAL NOT NULL DEFAULT 0,
+  note TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (employee_id) REFERENCES employees(id)
+);
+
 CREATE TABLE IF NOT EXISTS bank_statement_lines (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   transaction_date TEXT,

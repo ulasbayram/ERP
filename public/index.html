@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Ulaş Bayram ERP</title>
-    <link rel="stylesheet" href="/styles.css?v=20260731-ledger" />
+    <link rel="stylesheet" href="/styles.css?v=20260803-payroll" />
   </head>
   <body>
     <div class="shell">
@@ -259,8 +259,10 @@
                   <th>Şantiye</th>
                   <th>Çalıştığı Gün</th>
                   <th>Aylık Maaş</th>
+                  <th>Mesai</th>
                   <th>Avans</th>
                   <th>Ödenecek Maaş</th>
+                  <th>IBAN</th>
                   <th>Durum</th>
                   <th></th>
                 </tr>
@@ -370,8 +372,24 @@
             <input id="advanceMonthlySalary" type="number" min="0" step="0.01" inputmode="decimal" />
           </label>
           <label>
-            Bu Ay Alınan Avans
+            İşten Çıkış Tarihi
+            <input id="advanceLeaveDate" type="date" />
+          </label>
+          <label>
+            IBAN
+            <input id="advanceIban" type="text" placeholder="TR..." />
+          </label>
+          <label>
+            Avans Tarihi
+            <input id="advanceDate" type="date" />
+          </label>
+          <label>
+            Yeni Avans Tutarı
             <input id="advanceAmount" type="number" min="0" step="0.01" inputmode="decimal" />
+          </label>
+          <label>
+            Avans Notu
+            <input id="advanceNote" type="text" placeholder="Açıklama" />
           </label>
           <div class="calculation-row">
             <span>Ödenecek Maaş</span>
@@ -410,6 +428,6 @@
         </form>
       </section>
     </div>
-    <script src="/app.js?v=20260731-ledger"></script>
+    <script src="/app.js?v=20260803-payroll"></script>
   </body>
 </html>

@@ -195,6 +195,15 @@ button:hover {
   background: var(--panel-soft);
 }
 
+.danger-action {
+  color: var(--danger);
+}
+
+.danger-action:hover {
+  border-color: #d39a9a;
+  background: #fff2f2;
+}
+
 .text-button {
   border: 0;
   background: transparent;
@@ -688,6 +697,11 @@ tbody tr:hover {
   width: 100%;
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+.modal-body input[type="text"],
+.modal-body input[type="date"] {
+  text-align: left;
 }
 
 .calculation-row {

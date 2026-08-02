@@ -89,6 +89,7 @@ function movementTypeLabel(value) {
     credit_note: "Alacak dekontu",
     advance: "Avans",
     salary: "Maaş tahakkuku",
+    overtime: "Mesai tahakkuku",
     transfer: "Virman",
   };
   return labels[value] || value || "-";
@@ -167,6 +168,16 @@ function columnName(index) {
 }
 
 function worksheetXml(rows) {
+  const rowCount = Math.max(rows.length, 1);
+  const colCount = Math.max(...rows.map((row) => row.length), 1);
+  const lastCell = `${columnName(colCount - 1)}${rowCount}`;
+  const colWidths = Array.from({ length: colCount }, (_, index) => {
+    const maxLength = Math.min(
+      Math.max(...rows.map((row) => String(row[index] ?? "").length), 10) + 2,
+      42
+    );
+    return `<col min="${index + 1}" max="${index + 1}" width="${maxLength}" customWidth="1"/>`;
+  }).join("");
   const sheetRows = rows
     .map(
       (row, rowIndex) =>
@@ -182,7 +193,7 @@ function worksheetXml(rows) {
     )
     .join("");
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${sheetRows}</sheetData></worksheet>`;
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:${lastCell}"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>${colWidths}</cols><sheetData>${sheetRows}</sheetData><autoFilter ref="A1:${lastCell}"/></worksheet>`;
 }
 
 const crcTable = Array.from({ length: 256 }, (_, index) => {
@@ -352,12 +363,17 @@ const exportSchemas = {
     ["Personel ID", (row) => asNumber(row.id)],
     ["Ad Soyad", (row) => row.full_name || ""],
     ["İşe Giriş", (row) => formatDate(row.hire_date)],
+    ["İşten Çıkış", (row) => formatDate(row.leave_date)],
     ["Kıdem / Meslek", (row) => cleanJobTitle(row)],
     ["Şantiye", (row) => row.project_site || ""],
-    ["Çalıştığı Gün", (row) => asNumber(row.worked_days)],
+    ["Aktif Gün", (row) => asNumber(row.payroll_days || row.worked_days)],
     ["Aylık Maaş", (row) => asNumber(row.monthly_salary)],
+    ["Tahakkuk Maaşı", (row) => asNumber(row.base_salary)],
+    ["Mesai Saati", (row) => asNumber(row.overtime_hours)],
+    ["Mesai Tutarı", (row) => asNumber(row.overtime_total)],
     ["Avans", (row) => asNumber(row.advance_amount)],
     ["Ödenecek Maaş", (row) => asNumber(row.paid_salary)],
+    ["IBAN", (row) => row.iban_masked || ""],
     ["Durum", (row) => statusLabel(row.status)],
     ["PDF Sayısı", (row) => asNumber(row.attachment_count)],
   ],
@@ -726,15 +742,20 @@ function renderEmployees(rows = []) {
             <td>${formatDate(row.hire_date)}</td>
             <td>${escapeHtml(jobTitle)}</td>
             <td>${escapeHtml(row.project_site || "")}</td>
-            <td class="amount">${formatNumber(row.worked_days)}</td>
+            <td class="amount">${formatNumber(row.payroll_days || row.worked_days)}</td>
             <td class="amount">${formatMoney(row.monthly_salary)}</td>
+            <td class="amount">${formatMoney(row.overtime_total)}</td>
             <td class="amount">${formatMoney(row.advance_amount)}</td>
             <td class="amount">${formatMoney(row.paid_salary)}</td>
+            <td>${escapeHtml(row.iban_masked || "-")}</td>
             <td><span class="badge ${row.status}">${statusLabel(row.status)}</span></td>
             <td class="row-actions">
               <button class="ghost" data-open-employee-summary>Özet</button>
               <button class="ghost" data-open-site>Şantiye</button>
               <button class="ghost" data-open-advance>Avans</button>
+              <button class="ghost" data-open-overtime>Mesai</button>
+              <button class="ghost" data-open-payroll>Fiş</button>
+              <button class="ghost danger-action" data-delete-employee>Sil</button>
               <button class="ghost" data-open-employee-pdf>PDF</button>
             </td>
           </tr>
@@ -759,6 +780,18 @@ function renderEmployees(rows = []) {
     rowEl.querySelector("[data-open-employee-pdf]").addEventListener("click", () => {
       const employee = rows.find((item) => item.id === Number(rowEl.dataset.employee));
       openAttachmentModal("employee", employee);
+    });
+    rowEl.querySelector("[data-open-overtime]").addEventListener("click", () => {
+      const employee = rows.find((item) => item.id === Number(rowEl.dataset.employee));
+      openOvertimeModal(employee);
+    });
+    rowEl.querySelector("[data-open-payroll]").addEventListener("click", () => {
+      const employee = rows.find((item) => item.id === Number(rowEl.dataset.employee));
+      openPayrollVoucher(employee);
+    });
+    rowEl.querySelector("[data-delete-employee]").addEventListener("click", () => {
+      const employee = rows.find((item) => item.id === Number(rowEl.dataset.employee));
+      deleteEmployees([employee]);
     });
   });
   wireSelection("employees", filtered.map((row) => row.id));
@@ -818,7 +851,11 @@ function openAdvanceModal(employee) {
   document.querySelector("#advanceEmployeeId").value = employee.id;
   document.querySelector("#advanceEmployeeName").textContent = employee.full_name;
   document.querySelector("#advanceMonthlySalary").value = Number(employee.monthly_salary || 0);
-  document.querySelector("#advanceAmount").value = Number(employee.advance_amount || 0);
+  document.querySelector("#advanceLeaveDate").value = employee.leave_date ? String(employee.leave_date).slice(0, 10) : "";
+  document.querySelector("#advanceIban").value = employee.iban_masked || "";
+  document.querySelector("#advanceDate").value = new Date().toISOString().slice(0, 10);
+  document.querySelector("#advanceAmount").value = "";
+  document.querySelector("#advanceNote").value = "";
   updateAdvancePreview();
   document.querySelector("#advanceModal").hidden = false;
   document.querySelector("#advanceAmount").focus();
@@ -832,13 +869,19 @@ function closeAdvanceModal() {
 function updateAdvancePreview() {
   const salary = Number(document.querySelector("#advanceMonthlySalary").value) || 0;
   const advance = Number(document.querySelector("#advanceAmount").value) || 0;
-  document.querySelector("#advancePaidSalary").textContent = formatMoney(Math.max(salary - advance, 0));
+  const currentAdvance = Number(state.selectedEmployee?.advance_amount || 0);
+  const overtime = Number(state.selectedEmployee?.overtime_total || 0);
+  document.querySelector("#advancePaidSalary").textContent = formatMoney(Math.max(salary + overtime - currentAdvance - advance, 0));
 }
 
 async function saveCompensationFromModal() {
   const employeeId = Number(document.querySelector("#advanceEmployeeId").value);
   const monthlySalary = document.querySelector("#advanceMonthlySalary").value;
   const advanceAmount = document.querySelector("#advanceAmount").value;
+  const advanceDate = document.querySelector("#advanceDate").value;
+  const advanceNote = document.querySelector("#advanceNote").value;
+  const iban = document.querySelector("#advanceIban").value;
+  const leaveDate = document.querySelector("#advanceLeaveDate").value;
   const button = document.querySelector("#advanceForm button[type='submit']");
   button.disabled = true;
   button.textContent = "Kaydediliyor";
@@ -850,6 +893,10 @@ async function saveCompensationFromModal() {
         employeeId,
         monthlySalary,
         advanceAmount,
+        advanceDate,
+        advanceNote,
+        iban,
+        leaveDate,
       }),
     });
     const payload = await readJsonResponse(response, "Personel kaydedilemedi");
@@ -862,6 +909,118 @@ async function saveCompensationFromModal() {
   } finally {
     button.disabled = false;
     button.textContent = "Kaydet";
+  }
+}
+
+function openOvertimeModal(employee) {
+  if (!employee) return;
+  openActionModal(
+    "Mesai girişi",
+    employee.full_name,
+    `
+      <form id="overtimeForm" class="record-form">
+        <input type="hidden" name="employeeId" value="${escapeHtml(employee.id)}" />
+        <div class="record-grid">
+          <label>Mesai Tarihi<input name="overtimeDate" type="date" value="${new Date().toISOString().slice(0, 10)}" required /></label>
+          <label>Saat<input name="hours" type="number" min="0" step="0.01" required /></label>
+          <label>Saat Ücreti<input name="hourlyRate" type="number" min="0" step="0.01" required /></label>
+          <label>Tutar<input name="amount" type="number" min="0" step="0.01" placeholder="Otomatik hesaplanır" /></label>
+        </div>
+        <label>Not<input name="note" placeholder="Mesai açıklaması" /></label>
+        <footer class="modal-actions">
+          <button type="button" class="ghost" id="cancelActionModal">Vazgeç</button>
+          <button type="submit" class="primary">Kaydet</button>
+        </footer>
+      </form>
+    `
+  );
+  const form = document.querySelector("#overtimeForm");
+  const hours = form.querySelector("[name='hours']");
+  const hourlyRate = form.querySelector("[name='hourlyRate']");
+  const amount = form.querySelector("[name='amount']");
+  const updateAmount = () => {
+    if (document.activeElement === amount && amount.value) return;
+    amount.value = ((Number(hours.value) || 0) * (Number(hourlyRate.value) || 0)).toFixed(2);
+  };
+  hours.addEventListener("input", updateAmount);
+  hourlyRate.addEventListener("input", updateAmount);
+  document.querySelector("#cancelActionModal").addEventListener("click", closeActionModal);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = form.querySelector("button[type='submit']");
+    const payload = Object.fromEntries(new FormData(form).entries());
+    button.disabled = true;
+    button.textContent = "Kaydediliyor";
+    try {
+      const response = await fetch("/api/employees/overtime", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const result = await readJsonResponse(response, "Mesai kaydedilemedi");
+      state.payload = result.dashboard;
+      renderAll();
+      closeActionModal();
+      showToast("Mesai kaydedildi");
+    } catch (error) {
+      showToast(error.message, false);
+    } finally {
+      button.disabled = false;
+      button.textContent = "Kaydet";
+    }
+  });
+}
+
+function openPayrollVoucher(employee) {
+  if (!employee) return;
+  const salary = Number(employee.base_salary || employee.monthly_salary || 0);
+  const overtime = Number(employee.overtime_total || 0);
+  const advance = Number(employee.advance_amount || 0);
+  const payable = Number(employee.paid_salary || 0);
+  openActionModal(
+    "Maaş tahakkuk fişi",
+    `${employee.full_name} · ${employee.payroll_period || ""}`,
+    `
+      <div class="result-grid">
+        <div><span>Aktif Gün</span><b>${formatNumber(employee.payroll_days || 0)}</b></div>
+        <div><span>Tahakkuk Maaşı</span><b>${formatMoney(salary)}</b></div>
+        <div><span>Mesai</span><b>${formatMoney(overtime)}</b></div>
+        <div><span>Avans</span><b>${formatMoney(advance)}</b></div>
+        <div><span>Ödenecek</span><b>${formatMoney(payable)}</b></div>
+      </div>
+      <div class="compact-list">
+        <article class="compact-item"><div><b>Borç · Personel ücret gideri</b><span>${escapeHtml(employee.full_name)}</span></div><strong>${formatMoney(salary + overtime)}</strong></article>
+        <article class="compact-item"><div><b>Alacak · Verilen avans mahsubu</b><span>${formatDate(employee.hire_date)} / ${formatDate(employee.leave_date)}</span></div><strong>${formatMoney(advance)}</strong></article>
+        <article class="compact-item"><div><b>Alacak · Ödenecek maaş</b><span>${escapeHtml(employee.iban_masked || "IBAN yok")}</span></div><strong>${formatMoney(payable)}</strong></article>
+      </div>
+      <footer class="modal-actions">
+        <button type="button" class="ghost" id="printPayrollVoucher">Yazdır</button>
+        <button type="button" class="primary" id="closePayrollVoucher">Tamam</button>
+      </footer>
+    `
+  );
+  document.querySelector("#printPayrollVoucher")?.addEventListener("click", () => window.print());
+  document.querySelector("#closePayrollVoucher")?.addEventListener("click", closeActionModal);
+}
+
+async function deleteEmployees(rows) {
+  const validRows = (rows || []).filter(Boolean);
+  if (!validRows.length) return;
+  const label = validRows.length === 1 ? validRows[0].full_name : `${formatNumber(validRows.length)} personel`;
+  if (!window.confirm(`${label} silinsin mi? Bu işlem kartı listeden kaldırır.`)) return;
+  try {
+    const response = await fetch("/api/employees/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: validRows.map((row) => row.id) }),
+    });
+    const result = await readJsonResponse(response, "Personel silinemedi");
+    state.payload = result.dashboard;
+    selectionFor("employees").clear();
+    renderAll();
+    showToast("Personel silindi");
+  } catch (error) {
+    showToast(error.message, false);
   }
 }
 
@@ -1046,11 +1205,13 @@ function recordFields(type) {
     return `
       <label>Ad soyad<input name="fullName" required /></label>
       <label>İşe giriş<input name="hireDate" type="date" /></label>
+      <label>İşten çıkış<input name="leaveDate" type="date" /></label>
       <label>Kıdem / meslek<input name="jobTitle" placeholder="Betonarme Demircisi" /></label>
       <label>Şantiye<input name="projectSite" /></label>
       <label>Çalıştığı gün<input name="workedDays" type="number" min="0" step="1" value="0" /></label>
       <label>Aylık maaş<input name="monthlySalary" type="number" min="0" step="0.01" value="0" /></label>
       <label>Avans<input name="advanceAmount" type="number" min="0" step="0.01" value="0" /></label>
+      <label>IBAN<input name="iban" placeholder="TR..." /></label>
     `;
   }
   return `
@@ -1157,7 +1318,7 @@ function employeeSyntheticMovements(row) {
   if (!row) return [];
   const movementDate = new Date().toISOString().slice(0, 10);
   const rows = [];
-  if (Number(row.monthly_salary || 0) > 0) {
+  if (Number(row.base_salary || row.monthly_salary || 0) > 0) {
     rows.push({
       id: `salary-${row.id}`,
       account_kind: "employee",
@@ -1165,9 +1326,23 @@ function employeeSyntheticMovements(row) {
       movement_date: movementDate,
       movement_type: "salary",
       direction: "credit",
-      amount: Number(row.monthly_salary || 0),
+      amount: Number(row.base_salary || row.monthly_salary || 0),
       document_no: "BORDRO",
       description: "Aylık maaş tahakkuku",
+      source_table: "employees",
+    });
+  }
+  if (Number(row.overtime_total || 0) > 0) {
+    rows.push({
+      id: `overtime-${row.id}`,
+      account_kind: "employee",
+      account_id: row.id,
+      movement_date: movementDate,
+      movement_type: "overtime",
+      direction: "credit",
+      amount: Number(row.overtime_total || 0),
+      document_no: "MESAİ",
+      description: "Ay içi mesai tahakkuku",
       source_table: "employees",
     });
   }
@@ -1641,11 +1816,16 @@ function exportReport(kind) {
 
   const reports = state.payload?.reports || {};
   const controls = state.payload?.controls || [];
+  const kpis = state.payload?.kpis || {};
   const rows = [
-    ["Cari Borç Toplamı", asNumber(reports.partnerDebit), "Borç kolon toplamı"],
-    ["Cari Alacak Toplamı", asNumber(reports.partnerCredit), "Alacak kolon toplamı"],
-    ["Açık Cari Bakiye", asNumber(reports.partnerOpenBalance), "Alacak eksi borç"],
-    ["Personel Net Ödeme", asNumber(reports.employeeNetPayable), "Maaş eksi avans"],
+    ["Borç / Alacak", asNumber(reports.partnerOpenBalance), "Açık cari bakiye"],
+    ["Borç Toplamı", asNumber(reports.partnerDebit), "Cari borç kolon toplamı"],
+    ["Alacak Toplamı", asNumber(reports.partnerCredit), "Cari alacak kolon toplamı"],
+    ["Stok", 0, "Stok modülü henüz aktif değil"],
+    ["Maliyet", asNumber(kpis.invoiceTotal), "Alış faturaları toplamı"],
+    ["Finans", asNumber(kpis.bankNet), "Banka net pozisyonu"],
+    ["Alış / Satış", asNumber(kpis.invoiceTotal), "Alış faturası toplamı; satış modülü sonraki faz"],
+    ["Personel Net Ödeme", asNumber(reports.employeeNetPayable), "Maaş + mesai - avans"],
     ["Mutabakat Bekleyen Banka Satırı", asNumber(reports.unmatchedBankLines), "Banka eşleştirme bekleyen satır"],
     ["PDF Belge Sayısı", asNumber(reports.attachmentCount), "Cari/personel kartı ekleri"],
     ...controls.map((item) => [item.name, asNumber(item.count), `${item.owner || ""} · ${item.action || ""}`]),
@@ -1691,8 +1871,11 @@ const bulkToolbarConfig = {
   employees: [
     ["employeeSummary", "Personel özeti"],
     ["bulkAdvance", "Avans gir"],
+    ["bulkOvertime", "Mesai gir"],
+    ["payrollVoucher", "Tahakkuk fişi"],
     ["bulkSite", "Şantiye ata"],
     ["employeePdf", "PDF yükle"],
+    ["deleteEmployees", "Sil"],
     ["export", "Dışa aktar"],
   ],
   vat: [
@@ -1940,7 +2123,9 @@ function openBulkAdvance() {
     `${formatNumber(rows.length)} personel için aynı avans tutarı yazılır.`,
     `
       <form id="bulkAdvanceForm" class="record-form">
+        <label>Avans tarihi<input name="advanceDate" type="date" value="${new Date().toISOString().slice(0, 10)}" required /></label>
         <label>Avans tutarı<input name="advanceAmount" type="number" min="0" step="0.01" required /></label>
+        <label>Not<input name="note" /></label>
         <footer class="modal-actions">
           <button type="button" class="ghost" id="cancelActionModal">Vazgeç</button>
           <button type="submit" class="primary">Kaydet</button>
@@ -1953,7 +2138,11 @@ function openBulkAdvance() {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(event.currentTarget).entries());
     try {
-      await postBulk("/api/employees/bulk-advance", { ids: rows.map((row) => row.id), advanceAmount: data.advanceAmount }, "Avanslar kaydedildi");
+      await postBulk(
+        "/api/employees/bulk-advance",
+        { ids: rows.map((row) => row.id), advanceAmount: data.advanceAmount, advanceDate: data.advanceDate, note: data.note },
+        "Avanslar kaydedildi"
+      );
       selectionFor("employees").clear();
       renderAll();
       updateAllBulkToolbars();
@@ -2007,9 +2196,18 @@ function handleBulkAction(list, action) {
   }
   if (action === "bankExpense") return openBulkBankMatch(list, true);
   if (action === "bulkAdvance") return openBulkAdvance();
+  if (action === "bulkOvertime") {
+    const row = requireSingleSelection(list);
+    return row ? openOvertimeModal(row) : undefined;
+  }
+  if (action === "payrollVoucher") {
+    const row = requireSingleSelection(list);
+    return row ? openPayrollVoucher(row) : undefined;
+  }
   if (action === "bulkSite") return openBulkEmployeeSite();
   if (action === "employeeSummary") return openSelectedAccountSummary("employee", list);
   if (action === "employeePdf") return openSelectedAttachment("employee", list);
+  if (action === "deleteEmployees") return deleteEmployees(requireSelection("employees"));
   if (action === "instrumentSummary") return openSimpleSummary(list, "Portföy özeti");
   if (action === "partnerSummary") return openSelectedAccountSummary("partner", list);
   if (action === "partnerOpening") return openSelectedMovement("partner", list, "opening_balance");
@@ -2176,6 +2374,7 @@ function wireAdvanceModal() {
   document.querySelector("#cancelAdvanceModal").addEventListener("click", closeAdvanceModal);
   document.querySelector("#advanceMonthlySalary").addEventListener("input", updateAdvancePreview);
   document.querySelector("#advanceAmount").addEventListener("input", updateAdvancePreview);
+  document.querySelector("#advanceLeaveDate").addEventListener("input", updateAdvancePreview);
   document.querySelector("#advanceModal").addEventListener("click", (event) => {
     if (event.target.id === "advanceModal") closeAdvanceModal();
   });

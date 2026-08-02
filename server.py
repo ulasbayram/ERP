@@ -89,6 +89,48 @@ def to_iso(value) -> str | None:
     return text or None
 
 
+def period_from_date(value: str | None = None) -> str:
+    text = normalize_text(value)
+    if text:
+        return text[:7]
+    return date.today().strftime("%Y-%m")
+
+
+def month_bounds(period: str | None = None) -> tuple[date, date]:
+    clean = normalize_text(period) or date.today().strftime("%Y-%m")
+    try:
+        year, month = [int(part) for part in clean[:7].split("-")]
+        start = date(year, month, 1)
+    except Exception:
+        today = date.today()
+        start = date(today.year, today.month, 1)
+    next_month = date(start.year + (1 if start.month == 12 else 0), 1 if start.month == 12 else start.month + 1, 1)
+    return start, next_month - timedelta(days=1)
+
+
+def parse_date(value) -> date | None:
+    text = normalize_text(value)
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text[:10]).date()
+    except ValueError:
+        return None
+
+
+def payroll_base_salary(monthly_salary: float, hire_date: str | None, leave_date: str | None, period: str | None = None) -> tuple[float, int]:
+    start, end = month_bounds(period)
+    hired = parse_date(hire_date) or start
+    left = parse_date(leave_date) or end
+    active_start = max(hired, start)
+    active_end = min(left, end)
+    if active_end < active_start:
+        return 0.0, 0
+    active_days = (active_end - active_start).days + 1
+    calendar_days = (end - start).days + 1
+    return float(monthly_salary or 0) * active_days / calendar_days, active_days
+
+
 def to_float(value) -> float:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return float(value)
@@ -310,6 +352,45 @@ def ensure_schema_migrations(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS employee_advances (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          employee_id INTEGER NOT NULL,
+          advance_date TEXT NOT NULL,
+          period TEXT NOT NULL,
+          amount REAL NOT NULL DEFAULT 0,
+          note TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (employee_id) REFERENCES employees(id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS employee_overtime_entries (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          employee_id INTEGER NOT NULL,
+          overtime_date TEXT NOT NULL,
+          period TEXT NOT NULL,
+          hours REAL NOT NULL DEFAULT 0,
+          hourly_rate REAL NOT NULL DEFAULT 0,
+          amount REAL NOT NULL DEFAULT 0,
+          note TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (employee_id) REFERENCES employees(id)
+        )
+        """
+    )
+    employee_columns = {row["name"] for row in conn.execute("PRAGMA table_info(employees)")}
+    employee_migrations = {
+        "leave_date": "ALTER TABLE employees ADD COLUMN leave_date TEXT",
+        "iban_masked": "ALTER TABLE employees ADD COLUMN iban_masked TEXT",
+        "phone_masked": "ALTER TABLE employees ADD COLUMN phone_masked TEXT",
+    }
+    for column, statement in employee_migrations.items():
+        if column not in employee_columns:
+            conn.execute(statement)
     bank_columns = {row["name"] for row in conn.execute("PRAGMA table_info(bank_statement_lines)")}
     bank_migrations = {
         "match_status": "ALTER TABLE bank_statement_lines ADD COLUMN match_status TEXT NOT NULL DEFAULT 'unmatched'",
@@ -760,6 +841,8 @@ def import_workbook(path: Path, original_name: str) -> dict:
 def dashboard_payload() -> dict:
     init_db()
     with connect() as conn:
+        current_period = date.today().strftime("%Y-%m")
+
         def scalar(sql: str, params=()):
             row = conn.execute(sql, params).fetchone()
             return list(row)[0] if row else 0
@@ -793,7 +876,7 @@ def dashboard_payload() -> dict:
               FROM (
                 SELECT lower(trim(full_name)) AS normalize_name
                 FROM employees
-                WHERE full_name IS NOT NULL AND full_name <> ''
+                WHERE full_name IS NOT NULL AND full_name <> '' AND COALESCE(status, 'active') <> 'deleted'
               )
               GROUP BY normalize_name
               HAVING COUNT(*) > 1
@@ -890,13 +973,14 @@ def dashboard_payload() -> dict:
         employee_rows = []
         for row in conn.execute(
             """
-            SELECT e.id, e.full_name, e.job_code, e.hire_date, e.worked_days, e.status,
-                   e.monthly_salary, e.advance_amount, COALESCE(s.name, '') AS project_site,
+            SELECT e.id, e.full_name, e.job_code, e.hire_date, e.leave_date, e.worked_days, e.status,
+                   e.monthly_salary, e.advance_amount, e.iban_masked, COALESCE(s.name, '') AS project_site,
                    COALESCE(a.file_count, 0) AS attachment_count,
-                   CASE
-                     WHEN e.monthly_salary - e.advance_amount < 0 THEN 0
-                     ELSE e.monthly_salary - e.advance_amount
-                   END AS paid_salary
+                   COALESCE(adv.advance_total, COALESCE(e.advance_amount, 0), 0) AS period_advance_total,
+                   COALESCE(adv.advance_count, 0) AS advance_count,
+                   COALESCE(ot.overtime_total, 0) AS overtime_total,
+                   COALESCE(ot.overtime_hours, 0) AS overtime_hours,
+                   COALESCE(ot.overtime_count, 0) AS overtime_count
             FROM employees e
             LEFT JOIN project_sites s ON s.id = e.project_site_id
             LEFT JOIN (
@@ -905,10 +989,40 @@ def dashboard_payload() -> dict:
               WHERE entity_type = 'employee'
               GROUP BY entity_id
             ) a ON a.entity_id = e.id
+            LEFT JOIN (
+              SELECT employee_id, COUNT(*) AS advance_count, COALESCE(SUM(amount), 0) AS advance_total
+              FROM employee_advances
+              WHERE period = ?
+              GROUP BY employee_id
+            ) adv ON adv.employee_id = e.id
+            LEFT JOIN (
+              SELECT employee_id, COUNT(*) AS overtime_count,
+                     COALESCE(SUM(hours), 0) AS overtime_hours,
+                     COALESCE(SUM(amount), 0) AS overtime_total
+              FROM employee_overtime_entries
+              WHERE period = ?
+              GROUP BY employee_id
+            ) ot ON ot.employee_id = e.id
+            WHERE COALESCE(e.status, 'active') <> 'deleted'
             ORDER BY e.full_name
-            """
+            """,
+            (current_period, current_period),
         ):
             item = dict(row)
+            base_salary, payroll_days = payroll_base_salary(
+                float(item.get("monthly_salary") or 0),
+                item.get("hire_date"),
+                item.get("leave_date"),
+                current_period,
+            )
+            item["payroll_period"] = current_period
+            item["payroll_days"] = payroll_days
+            item["base_salary"] = base_salary
+            item["paid_salary"] = max(
+                base_salary + float(item.get("overtime_total") or 0) - float(item.get("period_advance_total") or 0),
+                0,
+            )
+            item["advance_amount"] = float(item.get("period_advance_total") or 0)
             item["seniority_days"] = 0
             item["seniority_label"] = ""
             item["job_title"] = clean_job_title(item.get("job_code", ""))
@@ -1016,6 +1130,31 @@ def dashboard_payload() -> dict:
             )
         ]
 
+        employee_advance_rows = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT a.id, a.employee_id, e.full_name, a.advance_date, a.period, a.amount, a.note
+                FROM employee_advances a
+                LEFT JOIN employees e ON e.id = a.employee_id
+                ORDER BY a.advance_date DESC, a.id DESC
+                """
+            )
+        ]
+
+        employee_overtime_rows = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT o.id, o.employee_id, e.full_name, o.overtime_date, o.period,
+                       o.hours, o.hourly_rate, o.amount, o.note
+                FROM employee_overtime_entries o
+                LEFT JOIN employees e ON e.id = o.employee_id
+                ORDER BY o.overtime_date DESC, o.id DESC
+                """
+            )
+        ]
+
         open_invoice_sum = scalar("SELECT COALESCE(SUM(remaining_amount), 0) FROM purchase_invoices WHERE remaining_amount > 0")
         due_instrument_sum = scalar("SELECT COALESCE(SUM(amount), 0) FROM payment_instruments")
 
@@ -1026,7 +1165,7 @@ def dashboard_payload() -> dict:
                 "invoiceRemaining": invoice_remaining,
                 "bankLineCount": scalar("SELECT COUNT(*) FROM bank_statement_lines"),
                 "bankNet": bank_net,
-                "employeeCount": scalar("SELECT COUNT(*) FROM employees"),
+                "employeeCount": scalar("SELECT COUNT(*) FROM employees WHERE COALESCE(status, 'active') <> 'deleted'"),
                 "paymentInstrumentCount": scalar("SELECT COUNT(*) FROM payment_instruments"),
                 "paymentInstrumentTotal": instrument_total,
                 "partnerCount": scalar("SELECT COUNT(*) FROM business_partners"),
@@ -1088,7 +1227,7 @@ def dashboard_payload() -> dict:
                 },
                 {
                     "name": "Maaş bilgisi eksik personel",
-                    "count": scalar("SELECT COUNT(*) FROM employees WHERE monthly_salary IS NULL OR monthly_salary = 0"),
+                    "count": scalar("SELECT COUNT(*) FROM employees WHERE COALESCE(status, 'active') <> 'deleted' AND (monthly_salary IS NULL OR monthly_salary = 0)"),
                     "owner": "Muhasebe",
                     "action": "Personel maaş kartlarını tamamla; avans düşümü ödenecek maaşa otomatik yansır.",
                 },
@@ -1112,6 +1251,8 @@ def dashboard_payload() -> dict:
             "accountMovements": movement_rows,
             "attachments": attachment_rows,
             "transferVouchers": transfer_rows,
+            "employeeAdvances": employee_advance_rows,
+            "employeeOvertime": employee_overtime_rows,
             "reports": {
                 "partnerDebit": sum(float(item.get("debit_total") or 0) for item in partner_rows),
                 "partnerCredit": sum(float(item.get("credit_total") or 0) for item in partner_rows),
@@ -1417,7 +1558,7 @@ class ERPHandler(SimpleHTTPRequestHandler):
                     return
                 with connect() as conn:
                     duplicate = conn.execute(
-                        "SELECT id FROM employees WHERE lower(trim(full_name)) = lower(trim(?)) LIMIT 1",
+                        "SELECT id FROM employees WHERE lower(trim(full_name)) = lower(trim(?)) AND COALESCE(status, 'active') <> 'deleted' LIMIT 1",
                         (full_name,),
                     ).fetchone()
                     if duplicate:
@@ -1428,9 +1569,9 @@ class ERPHandler(SimpleHTTPRequestHandler):
                         """
                         INSERT INTO employees(
                           first_name, last_name, full_name, hire_date, job_code,
-                          worked_days, project_site_id, monthly_salary, advance_amount, status
+                          leave_date, worked_days, project_site_id, monthly_salary, advance_amount, iban_masked, status
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
                         """,
                         (
                             first_name,
@@ -1438,10 +1579,12 @@ class ERPHandler(SimpleHTTPRequestHandler):
                             full_name,
                             normalize_text(payload.get("hireDate")) or None,
                             normalize_text(payload.get("jobTitle")) or None,
+                            normalize_text(payload.get("leaveDate")) or None,
                             worked_days,
                             site_id,
                             monthly_salary,
                             advance_amount,
+                            normalize_text(payload.get("iban")) or None,
                         ),
                     )
                     conn.execute(
@@ -1865,6 +2008,9 @@ class ERPHandler(SimpleHTTPRequestHandler):
                 payload = read_json_body(self)
                 ids = [int(item) for item in payload.get("ids", []) if int(item) > 0]
                 advance_amount = to_float(payload.get("advanceAmount"))
+                advance_date = normalize_text(payload.get("advanceDate")) or date.today().isoformat()
+                period = period_from_date(advance_date)
+                note = normalize_text(payload.get("note")) or None
                 if not ids:
                     self.send_json({"error": "Seçili personel yok."}, 400)
                     return
@@ -1873,9 +2019,25 @@ class ERPHandler(SimpleHTTPRequestHandler):
                     return
                 placeholders = ",".join("?" for _ in ids)
                 with connect() as conn:
+                    for employee_id in ids:
+                        conn.execute(
+                            """
+                            INSERT INTO employee_advances(employee_id, advance_date, period, amount, note)
+                            VALUES (?, ?, ?, ?, ?)
+                            """,
+                            (employee_id, advance_date, period, advance_amount, note),
+                        )
                     conn.execute(
-                        f"UPDATE employees SET advance_amount = ? WHERE id IN ({placeholders})",
-                        [advance_amount, *ids],
+                        f"""
+                        UPDATE employees
+                        SET advance_amount = (
+                          SELECT COALESCE(SUM(amount), 0)
+                          FROM employee_advances
+                          WHERE employee_id = employees.id AND period = ?
+                        )
+                        WHERE id IN ({placeholders})
+                        """,
+                        [period, *ids],
                     )
                     conn.execute(
                         "INSERT INTO audit_events(actor, action, entity_name, new_value) VALUES (?, ?, ?, ?)",
@@ -1883,7 +2045,7 @@ class ERPHandler(SimpleHTTPRequestHandler):
                             user["email"],
                             "bulk_update_employee_advance",
                             "employees",
-                            json.dumps({"ids": ids, "advance_amount": advance_amount}, ensure_ascii=False),
+                            json.dumps({"ids": ids, "advance_amount": advance_amount, "advance_date": advance_date}, ensure_ascii=False),
                         ),
                     )
                 self.send_json({"dashboard": dashboard_payload()})
@@ -1945,6 +2107,10 @@ class ERPHandler(SimpleHTTPRequestHandler):
                 employee_id = int(payload.get("employeeId", 0))
                 monthly_salary = to_float(payload.get("monthlySalary"))
                 advance_amount = to_float(payload.get("advanceAmount"))
+                advance_date = normalize_text(payload.get("advanceDate")) or date.today().isoformat()
+                advance_note = normalize_text(payload.get("advanceNote")) or None
+                iban = normalize_text(payload.get("iban")) or None
+                leave_date = normalize_text(payload.get("leaveDate")) or None
                 if employee_id <= 0:
                     self.send_json({"error": "Geçerli personel seçilmedi."}, 400)
                     return
@@ -1953,19 +2119,35 @@ class ERPHandler(SimpleHTTPRequestHandler):
                     return
                 with connect() as conn:
                     before = conn.execute(
-                        "SELECT monthly_salary, advance_amount FROM employees WHERE id = ?",
+                        "SELECT monthly_salary, advance_amount, iban_masked, leave_date FROM employees WHERE id = ?",
                         (employee_id,),
                     ).fetchone()
                     if not before:
                         self.send_json({"error": "Personel bulunamadı."}, 404)
                         return
+                    period = period_from_date(advance_date)
+                    if advance_amount > 0:
+                        conn.execute(
+                            """
+                            INSERT INTO employee_advances(employee_id, advance_date, period, amount, note)
+                            VALUES (?, ?, ?, ?, ?)
+                            """,
+                            (employee_id, advance_date, period, advance_amount, advance_note),
+                        )
                     conn.execute(
                         """
                         UPDATE employees
-                        SET monthly_salary = ?, advance_amount = ?
+                        SET monthly_salary = ?,
+                            advance_amount = (
+                              SELECT COALESCE(SUM(amount), 0)
+                              FROM employee_advances
+                              WHERE employee_id = ? AND period = ?
+                            ),
+                            iban_masked = ?,
+                            leave_date = ?
                         WHERE id = ?
                         """,
-                        (monthly_salary, advance_amount, employee_id),
+                        (monthly_salary, employee_id, period, iban, leave_date, employee_id),
                     )
                     conn.execute(
                         """
@@ -1978,7 +2160,13 @@ class ERPHandler(SimpleHTTPRequestHandler):
                             str(employee_id),
                             json.dumps(dict(before), ensure_ascii=False),
                             json.dumps(
-                                {"monthly_salary": monthly_salary, "advance_amount": advance_amount},
+                                {
+                                    "monthly_salary": monthly_salary,
+                                    "advance_amount": advance_amount,
+                                    "advance_date": advance_date if advance_amount > 0 else None,
+                                    "iban": iban,
+                                    "leave_date": leave_date,
+                                },
                                 ensure_ascii=False,
                             ),
                         ),
@@ -1988,6 +2176,84 @@ class ERPHandler(SimpleHTTPRequestHandler):
                 self.send_json({"error": "Geçersiz JSON."}, 400)
             except Exception as exc:
                 self.send_json({"error": f"Personel güncellenemedi: {exc}"}, 500)
+            return
+
+        if parsed.path == "/api/employees/overtime":
+            try:
+                payload = read_json_body(self)
+                employee_id = int(payload.get("employeeId", 0))
+                overtime_date = normalize_text(payload.get("overtimeDate")) or date.today().isoformat()
+                hours = to_float(payload.get("hours"))
+                hourly_rate = to_float(payload.get("hourlyRate"))
+                amount = to_float(payload.get("amount")) or hours * hourly_rate
+                note = normalize_text(payload.get("note")) or None
+                if employee_id <= 0:
+                    self.send_json({"error": "Geçerli personel seçilmedi."}, 400)
+                    return
+                if hours < 0 or hourly_rate < 0 or amount < 0:
+                    self.send_json({"error": "Mesai saat, ücret ve tutar negatif olamaz."}, 400)
+                    return
+                if amount <= 0:
+                    self.send_json({"error": "Mesai tutarı zorunlu."}, 400)
+                    return
+                with connect() as conn:
+                    if not conn.execute("SELECT id FROM employees WHERE id = ?", (employee_id,)).fetchone():
+                        self.send_json({"error": "Personel bulunamadı."}, 404)
+                        return
+                    cur = conn.execute(
+                        """
+                        INSERT INTO employee_overtime_entries(employee_id, overtime_date, period, hours, hourly_rate, amount, note)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (employee_id, overtime_date, period_from_date(overtime_date), hours, hourly_rate, amount, note),
+                    )
+                    conn.execute(
+                        "INSERT INTO audit_events(actor, action, entity_name, entity_id, new_value) VALUES (?, ?, ?, ?, ?)",
+                        (
+                            user["email"],
+                            "create_employee_overtime",
+                            "employee_overtime_entries",
+                            str(cur.lastrowid),
+                            json.dumps(payload, ensure_ascii=False),
+                        ),
+                    )
+                self.send_json({"dashboard": dashboard_payload()})
+            except json.JSONDecodeError:
+                self.send_json({"error": "Geçersiz JSON."}, 400)
+            except Exception as exc:
+                self.send_json({"error": f"Mesai kaydedilemedi: {exc}"}, 500)
+            return
+
+        if parsed.path == "/api/employees/delete":
+            try:
+                payload = read_json_body(self)
+                ids = [int(item) for item in payload.get("ids", []) if int(item) > 0]
+                if not ids:
+                    employee_id = int(payload.get("employeeId", 0))
+                    ids = [employee_id] if employee_id > 0 else []
+                if not ids:
+                    self.send_json({"error": "Silinecek personel seçilmedi."}, 400)
+                    return
+                placeholders = ",".join("?" for _ in ids)
+                with connect() as conn:
+                    conn.execute(
+                        f"UPDATE employees SET status = 'deleted' WHERE id IN ({placeholders})",
+                        ids,
+                    )
+                    conn.execute(
+                        "INSERT INTO audit_events(actor, action, entity_name, new_value) VALUES (?, ?, ?, ?)",
+                        (
+                            user["email"],
+                            "delete_employees",
+                            "employees",
+                            json.dumps({"ids": ids}, ensure_ascii=False),
+                        ),
+                    )
+                self.send_json({"dashboard": dashboard_payload()})
+            except json.JSONDecodeError:
+                self.send_json({"error": "Geçersiz JSON."}, 400)
+            except Exception as exc:
+                self.send_json({"error": f"Personel silinemedi: {exc}"}, 500)
             return
 
         if parsed.path == "/api/attachments":
