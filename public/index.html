@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Ulaş Bayram ERP</title>
-    <link rel="stylesheet" href="/styles.css?v=20260803-payroll" />
+    <link rel="stylesheet" href="/styles.css?v=20260803-admin-observer" />
   </head>
   <body>
     <div class="shell">
@@ -381,37 +381,42 @@
           </div>
         </section>
 
-        <section id="admin" class="view">
-          <div class="page-head">
+        <section id="admin" class="view admin-home">
+          <div class="page-head admin-home-head">
             <div>
-              <h1>Admin</h1>
-              <p>Firma kayıtları, kullanıcı rolleri ve firma bağlantıları.</p>
+              <h1>Admin Gözlem Paneli</h1>
+              <p>Firmalara önce gözlem ekranından gir, sonra logları veya operasyon datasını bilinçli olarak aç.</p>
             </div>
             <button class="primary" id="adminCreateCompanyButton">Firma Aç</button>
           </div>
-          <div class="layout-2">
-            <section class="block">
-              <div class="block-head"><h2>Kullanıcılar</h2><span>Firma ve rol ataması</span></div>
-              <div class="table-card flat">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Kullanıcı</th>
-                      <th>Firma</th>
-                      <th>Rol</th>
-                      <th>Durum</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody id="adminUserRows"></tbody>
-                </table>
+          <div class="admin-overview" id="adminOverview"></div>
+          <div id="adminCompanyRows" class="admin-company-grid"></div>
+          <section class="admin-detail-panel" id="adminCompanyDetail" hidden>
+            <div class="block-head">
+              <div>
+                <h2 id="adminCompanyDetailTitle">Firma detayları</h2>
+                <span id="adminCompanyDetailMeta"></span>
               </div>
-            </section>
-            <section class="block">
-              <div class="block-head"><h2>Firmalar</h2><span>Kayıtlı çalışma alanları</span></div>
-              <div id="adminCompanyRows" class="compact-list"></div>
-            </section>
-          </div>
+              <button type="button" class="ghost" id="adminCloseCompanyDetail">Kapat</button>
+            </div>
+            <div class="admin-detail-layout">
+              <form id="adminCompanyEditForm" class="record-form admin-edit-form">
+                <label>Firma adı<input data-company-name /></label>
+                <label>Şirket no / vergi no<input data-company-tax /></label>
+                <label>Durum
+                  <select data-company-status>
+                    <option value="active">Aktif</option>
+                    <option value="archived">Arşivli</option>
+                  </select>
+                </label>
+                <button type="submit" class="primary">Firma Bilgisini Kaydet</button>
+              </form>
+              <div>
+                <div class="block-head tight"><h2>Çalışanlar ve Pozisyonları</h2><span id="adminEmployeeCount"></span></div>
+                <div id="adminUserRows" class="admin-user-grid"></div>
+              </div>
+            </div>
+          </section>
         </section>
       </main>
     </div>

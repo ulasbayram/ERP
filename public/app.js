@@ -1154,6 +1154,13 @@ function renderCompanySelector() {
   });
   const createCompanyButton = document.querySelector("#createCompanyButton");
   if (createCompanyButton) createCompanyButton.hidden = !state.permissions?.canSwitchCompany;
+  renderShellMode();
+}
+
+function renderShellMode() {
+  const shell = document.querySelector(".shell");
+  if (!shell) return;
+  shell.classList.toggle("admin-observer", Boolean(state.permissions?.canManageUsers && !state.companyId));
 }
 
 function roleLabel(value) {
@@ -1235,9 +1242,9 @@ function wireCompanySelector() {
           body: JSON.stringify(data),
         });
         state.payload = (await readJsonResponse(response, "Firma oluşturulamadı")).dashboard;
-        state.companyId = state.payload?.selectedCompany?.id || state.companyId;
-        state.companies = state.payload?.companies || state.companies;
-        renderAll();
+        state.companyId = null;
+        await loadDashboard();
+        activateTab("admin");
         closeActionModal();
         showToast("Firma oluşturuldu");
       } catch (error) {
@@ -1391,9 +1398,9 @@ async function saveCompany(companyId) {
       body: JSON.stringify(payload),
     });
     state.payload = (await readJsonResponse(response, "Firma güncellenemedi")).dashboard;
-    state.companyId = state.payload?.selectedCompany?.id || state.companyId;
-    state.companies = state.payload?.companies || state.companies;
-    renderAll();
+    state.companyId = null;
+    await loadDashboard();
+    activateTab("admin");
     showToast("Firma güncellendi");
   } catch (error) {
     showToast(error.message, false);
@@ -2616,6 +2623,7 @@ function activateTab(tab) {
   if (tab === "admin" && !state.permissions?.canManageUsers) tab = "home";
   document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.tab === tab));
   document.querySelectorAll(".view").forEach((view) => view.classList.toggle("active", view.id === tab));
+  renderShellMode();
 }
 
 function wireNavigation() {
@@ -2750,6 +2758,201 @@ async function boot() {
     if (state.permissions?.canManageUsers && !state.companyId) activateTab("admin");
   } catch {
     setStatus("Backend yok", false);
+  }
+}
+
+function renderAdminDashboard() {
+  const overviewBody = document.querySelector("#adminOverview");
+  const userBody = document.querySelector("#adminUserRows");
+  const companyBody = document.querySelector("#adminCompanyRows");
+  const detailPanel = document.querySelector("#adminCompanyDetail");
+  const detailTitle = document.querySelector("#adminCompanyDetailTitle");
+  const detailMeta = document.querySelector("#adminCompanyDetailMeta");
+  const employeeCount = document.querySelector("#adminEmployeeCount");
+  const editForm = document.querySelector("#adminCompanyEditForm");
+  if (!overviewBody || !userBody || !companyBody || !detailPanel || !editForm) return;
+
+  if (!state.permissions?.canManageUsers) {
+    overviewBody.innerHTML = "";
+    userBody.innerHTML = "";
+    detailPanel.hidden = true;
+    companyBody.innerHTML = `<div class="empty-state">Admin yetkisi gerekli.</div>`;
+    return;
+  }
+
+  const companies = state.payload?.companies || state.companies || [];
+  const users = state.payload?.adminUsers || [];
+  const overview = state.payload?.adminOverview || {};
+  const selectedAdminCompanyId = state.adminCompanyId || null;
+  const selectedCompany = companies.find((company) => Number(company.id) === Number(selectedAdminCompanyId)) || null;
+  const companyUsers = (companyId) => users.filter((user) => Number(user.company_id) === Number(companyId) && user.role !== "admin");
+  const pendingUsers = users.filter((user) => !user.company_id && user.role !== "admin");
+  const visibleUsers = selectedCompany ? [...companyUsers(selectedCompany.id), ...pendingUsers] : [];
+  const companyOptions = (selectedId) =>
+    `<option value="">Atama bekliyor</option>${companies
+      .map((company) => `<option value="${company.id}" ${Number(company.id) === Number(selectedId) ? "selected" : ""}>${escapeHtml(company.name)}</option>`)
+      .join("")}`;
+
+  overviewBody.innerHTML = `
+    <div><span>Firma</span><b>${formatNumber(overview.companyCount || companies.length)}</b></div>
+    <div><span>Aktif firma</span><b>${formatNumber(overview.activeCompanyCount || 0)}</b></div>
+    <div><span>Kullanıcı</span><b>${formatNumber(overview.userCount || users.length)}</b></div>
+    <div><span>Atama bekleyen</span><b>${formatNumber(overview.pendingUserCount || pendingUsers.length)}</b></div>
+  `;
+
+  companyBody.innerHTML =
+    companies
+      .map((company) => {
+        const boundUsers = companyUsers(company.id);
+        const companyNo = company.tax_number || `#${company.id}`;
+        return `
+          <article class="admin-company-card ${Number(company.id) === Number(selectedAdminCompanyId) ? "selected" : ""}" data-admin-company="${company.id}">
+            <div class="company-card-top">
+              <button type="button" class="company-logo" data-manage-company="${company.id}" title="Firma detayları">${escapeHtml(companyInitials(company.name))}</button>
+              <span class="badge ${company.status === "archived" ? "overdue" : "paid"}">${company.status === "archived" ? "Arşivli" : "Aktif"}</span>
+            </div>
+            <h2>${escapeHtml(company.name || "-")}</h2>
+            <dl class="company-card-meta">
+              <div><dt>Şirket no</dt><dd>${escapeHtml(companyNo)}</dd></div>
+              <div><dt>Çalışan sayısı</dt><dd>${formatNumber(boundUsers.length)}</dd></div>
+            </dl>
+            <div class="admin-card-actions">
+              <button type="button" class="ghost" data-manage-company="${company.id}">Detaylar</button>
+              <button type="button" class="ghost" data-open-company-logs="${company.id}">Logları Gör</button>
+              <button type="button" class="primary" data-open-company="${company.id}">Dataları Gör</button>
+            </div>
+          </article>
+        `;
+      })
+      .join("") || `<div class="empty-state">Firma yok.</div>`;
+
+  detailPanel.hidden = !selectedCompany;
+  if (selectedCompany) {
+    detailPanel.dataset.adminCompany = selectedCompany.id;
+    detailTitle.textContent = selectedCompany.name || "Firma detayları";
+    detailMeta.textContent = `Şirket no: ${selectedCompany.tax_number || `#${selectedCompany.id}`}`;
+    employeeCount.textContent = `${formatNumber(companyUsers(selectedCompany.id).length)} çalışan`;
+    editForm.querySelector("[data-company-name]").value = selectedCompany.name || "";
+    editForm.querySelector("[data-company-tax]").value = selectedCompany.tax_number || "";
+    editForm.querySelector("[data-company-status]").value = selectedCompany.status === "archived" ? "archived" : "active";
+  } else {
+    detailPanel.removeAttribute("data-admin-company");
+  }
+
+  userBody.innerHTML = selectedCompany
+    ? visibleUsers
+        .map(
+          (user) => `
+            <article class="admin-user-card ${!user.company_id ? "pending" : ""}" data-admin-user="${user.id}">
+              <div class="admin-user-main">
+                <b>${escapeHtml(user.full_name || user.email || "-")}</b>
+                <span>${escapeHtml(user.email || "-")}</span>
+                ${!user.company_id ? `<small>Atama bekliyor</small>` : ""}
+              </div>
+              <div class="admin-user-fields">
+                <input data-user-full-name value="${escapeHtml(user.full_name || "")}" aria-label="Ad soyad" />
+                <input data-user-email type="email" value="${escapeHtml(user.email || "")}" aria-label="E-posta" />
+              </div>
+              <div class="admin-user-controls">
+                <select data-user-company>${companyOptions(user.company_id)}</select>
+                <select data-user-role>
+                  <option value="accountant" ${user.role === "accountant" ? "selected" : ""}>Muhasebeci</option>
+                  <option value="owner" ${user.role === "owner" ? "selected" : ""}>Şirket sahibi</option>
+                  <option value="admin" ${user.role === "admin" ? "selected" : ""}>Admin</option>
+                </select>
+                <label class="inline-check"><input type="checkbox" data-user-active ${Number(user.is_active) ? "checked" : ""} /> Aktif</label>
+                <button type="button" class="ghost" data-save-user="${user.id}">Kaydet</button>
+              </div>
+            </article>
+          `
+        )
+        .join("") || `<div class="empty-state">Bu firmaya bağlı kullanıcı yok.</div>`
+    : "";
+
+  userBody.querySelectorAll("[data-save-user]").forEach((button) => {
+    button.addEventListener("click", () => saveUserAssignment(button.dataset.saveUser));
+  });
+  companyBody.querySelectorAll("[data-manage-company]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.adminCompanyId = Number(button.dataset.manageCompany);
+      renderAdminDashboard();
+      document.querySelector("#adminCompanyDetail")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
+  companyBody.querySelectorAll("[data-open-company]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      state.companyId = Number(button.dataset.openCompany);
+      await loadDashboard();
+      activateTab("home");
+    });
+  });
+  companyBody.querySelectorAll("[data-open-company-logs]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      state.companyId = Number(button.dataset.openCompanyLogs);
+      await loadDashboard();
+      activateTab("audit");
+    });
+  });
+  document.querySelector("#adminCloseCompanyDetail")?.addEventListener("click", () => {
+    state.adminCompanyId = null;
+    renderAdminDashboard();
+  });
+  editForm.onsubmit = (event) => {
+    event.preventDefault();
+    const companyId = detailPanel.dataset.adminCompany;
+    if (companyId) saveCompany(companyId);
+  };
+}
+
+async function saveCompany(companyId) {
+  const detailPanel = document.querySelector("#adminCompanyDetail");
+  if (!detailPanel) return;
+  const payload = {
+    companyId: Number(companyId),
+    name: detailPanel.querySelector("[data-company-name]").value,
+    taxNumber: detailPanel.querySelector("[data-company-tax]").value,
+    status: detailPanel.querySelector("[data-company-status]").value,
+  };
+  try {
+    const response = await fetch("/api/admin/companies/update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    await readJsonResponse(response, "Firma güncellenemedi");
+    state.companyId = null;
+    await loadDashboard();
+    activateTab("admin");
+    showToast("Firma güncellendi");
+  } catch (error) {
+    showToast(error.message, false);
+  }
+}
+
+async function saveUserAssignment(userId) {
+  const row = document.querySelector(`[data-admin-user="${userId}"]`);
+  if (!row) return;
+  const payload = {
+    userId: Number(userId),
+    fullName: row.querySelector("[data-user-full-name]").value,
+    email: row.querySelector("[data-user-email]").value,
+    companyId: row.querySelector("[data-user-company]").value || null,
+    role: row.querySelector("[data-user-role]").value,
+    isActive: row.querySelector("[data-user-active]").checked,
+  };
+  try {
+    const response = await fetch("/api/admin/users/assign", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    await readJsonResponse(response, "Kullanıcı güncellenemedi");
+    state.companyId = null;
+    await loadDashboard();
+    activateTab("admin");
+    showToast("Kullanıcı yetkisi güncellendi");
+  } catch (error) {
+    showToast(error.message, false);
   }
 }
 

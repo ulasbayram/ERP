@@ -39,6 +39,24 @@ select {
   min-height: 100vh;
 }
 
+.shell.admin-observer {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.shell.admin-observer .rail {
+  display: none;
+}
+
+.shell.admin-observer .main {
+  width: min(1420px, 100%);
+  justify-self: center;
+}
+
+.shell.admin-observer .context label:not(:first-child),
+.shell.admin-observer .app-actions > button:not(#logoutButton) {
+  display: none;
+}
+
 .rail {
   background: #f8fafc;
   border-right: 1px solid var(--line);
@@ -767,36 +785,11 @@ tbody tr:hover {
   white-space: nowrap;
 }
 
-[data-admin-user] td:first-child {
-  min-width: 220px;
-}
-
-[data-admin-user] td:first-child input,
-.admin-company-row input {
-  width: 100%;
-  margin-bottom: 6px;
-}
-
-.admin-company-row {
-  grid-template-columns: auto minmax(0, 1fr) auto;
-}
-
-.admin-company-row.selected {
-  border-color: var(--accent);
-  background: #f7fbff;
-}
-
-.admin-row-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
 .admin-overview {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
-  margin-bottom: 8px;
+  margin-bottom: 12px;
 }
 
 .admin-overview div {
@@ -817,6 +810,162 @@ tbody tr:hover {
   display: block;
   margin-top: 4px;
   font-size: 20px;
+}
+
+.admin-company-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.admin-company-card {
+  display: grid;
+  gap: 14px;
+  min-height: 220px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 14px;
+  box-shadow: var(--shadow);
+}
+
+.admin-company-card.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(34, 93, 143, 0.12);
+}
+
+.company-card-top,
+.admin-card-actions,
+.admin-user-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.company-card-top {
+  justify-content: space-between;
+}
+
+.admin-company-card h2 {
+  min-height: 40px;
+  font-size: 18px;
+  line-height: 1.25;
+}
+
+.company-card-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.company-card-meta div {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel-soft);
+  padding: 8px;
+}
+
+.company-card-meta dt {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.company-card-meta dd {
+  margin: 4px 0 0;
+  font-weight: 800;
+}
+
+.admin-card-actions {
+  flex-wrap: wrap;
+  align-self: end;
+}
+
+.admin-card-actions button {
+  flex: 1 1 auto;
+}
+
+.admin-detail-panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 14px;
+  box-shadow: var(--shadow);
+}
+
+.admin-detail-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.35fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.admin-edit-form {
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel-soft);
+  padding: 12px;
+}
+
+.admin-edit-form input,
+.admin-edit-form select {
+  width: 100%;
+}
+
+.admin-user-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.admin-user-card {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.75fr) minmax(220px, 0.9fr) minmax(360px, 1.25fr);
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: #fff;
+  padding: 10px;
+}
+
+.admin-user-card.pending {
+  border-color: #e0c37a;
+  background: #fffaf0;
+}
+
+.admin-user-main b,
+.admin-user-main span,
+.admin-user-main small {
+  display: block;
+}
+
+.admin-user-main span,
+.admin-user-main small {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.admin-user-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.admin-user-controls {
+  justify-content: end;
+  flex-wrap: wrap;
+}
+
+.admin-user-fields input,
+.admin-user-controls select {
+  width: 100%;
+}
+
+.tight {
+  margin-bottom: 8px;
 }
 
 .company-logo {
@@ -971,7 +1120,24 @@ tbody tr:hover {
   }
 
   .kpi-strip,
-  .result-grid {
+  .result-grid,
+  .admin-overview,
+  .admin-detail-layout,
+  .admin-user-card {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .admin-user-controls {
+    justify-content: start;
+  }
+}
+
+@media (max-width: 760px) {
+  .admin-overview,
+  .company-card-meta,
+  .admin-detail-layout,
+  .admin-user-card,
+  .admin-user-fields {
+    grid-template-columns: 1fr;
   }
 }
